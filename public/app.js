@@ -1,0 +1,2548 @@
+// Whole app in one file. No frameworks, no build step - just DOM manipulation,
+// event listeners, and fetch calls (those live in data.js). State is a plain
+// object that render() reads to redraw the current page. The entry form is the
+// only place we do targeted updates instead of a full redraw - otherwise Film
+// Review taps would blow away whatever's mid-typing in the text inputs.
+
+import * as api from './data.js';
+
+
+const MODES = [
+  { id: 'offence',           label: 'Offence' },
+  { id: 'offence_blocking',  label: 'Offence + Blocking' },
+  { id: 'full_game',         label: 'Full Game' },
+];
+
+// Stat definitions per mode. The UI iterates these to build the grids and
+// Film Review buttons, so adding a stat means adding it here (plus an entry
+// in emptySet, normalizeSetKeys, the schema, and the API insert/update).
+// Each entry: { key, label, tapKey?, getCount? }
+// tapKey: field to increment on Film Review tap (default = key)
+// getCount: fn(currentSet) => number (default = currentSet[key] || 0)
+
+// Detail mode - full breakdown
+const OFFENCE_STATS_DETAIL = [
+  { key: 'kills',          label: 'Kill'          },
+  { key: 'continuedPlus',  label: 'Continue Plus' },
+  { key: 'continuedMinus', label: 'Continue Minus'},
+  { key: 'errors',         label: 'Error'         },
+];
+const BLOCKING_STATS_DETAIL = [
+  { key: 'blockKills',  label: 'Block Kill'  },
+  { key: 'blockPlus',   label: 'Block Plus'  },
+  { key: 'blockMinus',  label: 'Block Minus' },
+  { key: 'blockErrors', label: 'Block Error' },
+];
+const DEFENCE_STATS_DETAIL = [
+  { key: 'digPlus',   label: 'Dig Plus'  },
+  { key: 'digs',      label: 'Dig'       },
+  { key: 'digErrors', label: 'Dig Error' },
+];
+
+// Standard mode - condensed; _continue is virtual (displays C++C-, taps continuedPlus)
+const OFFENCE_STATS_STANDARD = [
+  { key: 'kills',      label: 'Kill'  },
+  { key: '_continue',  label: 'Continue',
+    tapKey: 'continuedPlus',
+    getCount: s => (s.continuedPlus || 0) + (s.continuedMinus || 0) },
+  { key: 'errors',     label: 'Error' },
+];
+const BLOCKING_STATS_STANDARD = [
+  { key: 'blockKills',  label: 'Block'       },
+  { key: 'blockErrors', label: 'Block Error' },
+];
+const DEFENCE_STATS_STANDARD = [
+  { key: 'digs',      label: 'Dig'       },
+  { key: 'digErrors', label: 'Dig Error' },
+];
+
+// Passing - same in both modes, only colours differ
+const PASSING_STATS = [
+  { key: 'pass4', label: '4-Pass' },
+  { key: 'pass3', label: '3-Pass' },
+  { key: 'pass2', label: '2-Pass' },
+  { key: 'pass1', label: '1-Pass' },
+  { key: 'pass0', label: 'Pass 0' },
+];
+
+// Returns the stat sections for a given mode + detail level.
+// detailMode=true (default) → full breakdown; false → condensed Standard buttons.
+// Manual entry always passes true; Film Review passes es.detailMode.
+function getStatGroups(mode, detailMode = true) {
+  const offenceStats  = detailMode ? OFFENCE_STATS_DETAIL  : OFFENCE_STATS_STANDARD;
+  const blockingStats = detailMode ? BLOCKING_STATS_DETAIL : BLOCKING_STATS_STANDARD;
+  const defenceStats  = detailMode ? DEFENCE_STATS_DETAIL  : DEFENCE_STATS_STANDARD;
+
+  const groups = [{ label: 'Attack', stats: offenceStats }];
+  if (mode === 'offence_blocking' || mode === 'full_game')
+    groups.push({ label: 'Blocking', stats: blockingStats });
+  if (mode === 'full_game') {
+    groups.push({ label: 'Defence', stats: defenceStats });
+    groups.push({ label: 'Passing', stats: PASSING_STATS });
+  }
+  return groups;
+}
+
+// Just a lookup of id → label, derived from MODES so I don't have to keep
+// two things in sync.
+const MODE_LABELS = Object.fromEntries(MODES.map(m => [m.id, m.label]));
+
+//                                ██
+//                               ██
+// ██████╗ ███████╗███╗   ██╗███████╗███████╗
+// ██╔══██╗██╔════╝████╗  ██║██╔════╝██╔════╝
+// ██████╔╝█████╗  ██╔██╗ ██║█████╗  █████╗
+// ██╔══██╗██╔══╝  ██║╚██╗██║██╔══╝  ██╔══╝
+// ██║  ██║███████╗██║ ╚████║███████╗███████╗
+// ╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝╚══════╝╚══════╝
+//
+// ██╗  ██╗███████╗██╗      ███╗   ███╗███████╗██████╗
+// ██║  ██║██╔════╝██║      ████╗ ████║██╔════╝██╔══██╗
+// ███████║█████╗  ██║      ██╔████╔██║█████╗  ██████╔╝
+// ██╔══██║██╔══╝  ██║      ██║╚██╔╝██║██╔══╝  ██╔══██╗
+// ██║  ██║███████╗███████╗ ██║ ╚═╝ ██║███████╗██║  ██║
+// ╚═╝  ╚═╝╚══════╝╚══════╝ ╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝
+//
+// The efficiency formulas below (and the pass rating scale) are lifted
+// directly from Renée Helmer's Excel workbook; she did the actual stat
+// methodology, I just ported it to JavaScript.
+// THIS IS HER EXPLICIT CREDIT.
+
+function calcStats(kills, errors, continued, blockKills = 0) {
+  const attempts = kills + errors + continued;
+  if (!attempts && !blockKills) return { killPct: 0, errorPct: 0, efficiency: 0, attempts: 0 };
+  return {
+    killPct:    attempts ? kills / attempts : 0,
+    errorPct:   attempts ? errors / attempts : 0,
+    // block kills bump efficiency but they aren't attack attempts, so they
+    // only show up in the numerator
+    efficiency: attempts ? (kills + blockKills - errors) / attempts : 0,
+    attempts,
+  };
+}
+
+// Good pass % = (4-passes + 3-passes) / total. Both grades give the setter
+// real options, so lumping them together as "good passes" is more useful than
+// tracking 4s alone. 50%+ is a reasonable benchmark.
+function calcPassPct(s) {
+  const total = (s.pass_4||0) + (s.pass_3||0) + (s.pass_2||0) + (s.pass_1||0) + (s.pass_0||0);
+  if (!total) return null;
+  return ((s.pass_4||0) + (s.pass_3||0)) / total;
+}
+
+// CSS colour token for an efficiency value - green ≥30%, yellow ≥15%, red below.
+function effColor(eff) {
+  if (eff === null || eff === undefined || isNaN(eff)) return 'var(--text-sec)';
+  if (eff >= 0.300) return 'var(--success)';
+  if (eff >= 0.150) return 'var(--warning)';
+  return 'var(--danger)';
+}
+
+function pctStr(val, total) {
+  if (!total) return '-';
+  return (val / total * 100).toFixed(1) + '%';
+}
+
+function effStr(kills, errors, total, blockKills = 0) {
+  if (!total) return '-';
+  return ((kills + blockKills - errors) / total * 100).toFixed(1) + '%';
+}
+
+function effNum(kills, errors, total, blockKills = 0) {
+  if (!total) return null;
+  return (kills + blockKills - errors) / total;
+}
+
+function fmtDate(dateStr, opts = {}) {
+  // Dates come back as plain YYYY-MM-DD. Parse at noon UTC so a -5 or +12
+  // timezone doesn't shift the day backward when we render.
+  const d = new Date(dateStr + 'T12:00:00Z');
+  return d.toLocaleDateString('en-US', opts);
+}
+
+function initials(name) {
+  return (name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+}
+
+// Per-device UI preferences, stored in localStorage. Not on the user record
+// because Kobe's phone is allowed to look different from mine.
+const SETTINGS_KEY = 'vs_settings';
+
+const SETTINGS_DEFAULTS = {
+  accentColor: '#FF6B35',
+};
+
+// Preset accent swatches. There's still a colour picker for anyone who wants
+// something off-list.
+const ACCENT_PRESETS = [
+  '#FF6B35', '#60A5FA', '#34D399', '#FBBF24',
+  '#F87171', '#A78BFA', '#F472B6',
+];
+
+let settings = loadSettings();
+
+function loadSettings() {
+  try {
+    return { ...SETTINGS_DEFAULTS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') };
+  } catch {
+    return { ...SETTINGS_DEFAULTS };
+  }
+}
+
+function saveSetting(key, value) {
+  settings[key] = value;
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  applyAccentColor();
+}
+
+function hexToRgb(hex) {
+  const h = hex.replace('#', '');
+  return {
+    r: parseInt(h.slice(0, 2), 16),
+    g: parseInt(h.slice(2, 4), 16),
+    b: parseInt(h.slice(4, 6), 16),
+  };
+}
+
+function applyAccentColor() {
+  document.documentElement.style.setProperty('--accent', settings.accentColor);
+  // accent-muted is just the same colour at 12% - re-derive it whenever
+  // accent changes so the two stay in sync.
+  const { r, g, b } = hexToRgb(settings.accentColor);
+  document.documentElement.style.setProperty('--accent-muted', `rgba(${r},${g},${b},0.12)`);
+}
+
+// One object holding all app state. render() reads from it; everything else
+// mutates it in place.
+const state = {
+  page:        'dashboard',
+  sessionId:   null,
+  users:       [],
+  currentUser: null,
+  sessions:    [],      // sessions for the current user, cached after load
+  entryState:  null,    // populated when on the entry/edit page
+};
+
+// Hold all active Chart.js instances so we can destroy them on navigate and
+// avoid leaking canvas contexts when leaving the dashboard.
+let chartInstances = [];
+
+function emptySet() {
+  return {
+    kills: 0, errors: 0, continuedPlus: 0, continuedMinus: 0,
+    blockKills: 0, blockPlus: 0, blockMinus: 0, blockErrors: 0,
+    digPlus: 0, digs: 0, digErrors: 0,
+    pass4: 0, pass3: 0, pass2: 0, pass1: 0, pass0: 0,
+  };
+}
+
+function sumSets(sets) {
+  const total = emptySet();
+  sets.forEach(s => Object.keys(total).forEach(k => { total[k] += s[k] || 0; }));
+  return total;
+}
+
+// Fresh entry-form state. Pass an existing session to pre-populate for editing.
+function freshEntryState(editing = null) {
+  return {
+    eventName:  editing?.event_name  || '',
+    eventDate:  editing?.event_date  || new Date().toISOString().slice(0, 10),
+    notes:      editing?.notes       || '',
+    mode:       editing?.mode        || 'offence',
+    sets:       editing?.sets?.length
+      ? editing.sets.map(s => ({ ...emptySet(), ...normalizeSetKeys(s) }))
+      : [emptySet()],
+    activeTab:  0,               // 0 = Game Total, 1+ = Set N
+    entryMode:  'film',
+    detailMode: false,           // false = Standard (no block kill), true = Detail (full breakdown)
+    tapHistory: [],              // for undo in Film Review
+    errors:     {},              // field-level validation errors
+  };
+}
+
+// D1 gives back snake_case, the frontend wants camelCase - this just flips
+// the keys. The `|| s.xxxCamel` fallbacks let us pass an already-camel object
+// straight through (handy when editing in-memory before save).
+// The longer fallback chains (e.g. `|| s.continued || 0`) are backward
+// compatibility for old session rows written before the schema rename. Any
+// session logged before the rename will have zeros in the new columns but
+// non-zero in the old ones - the fallback picks those up so old data still
+// reads correctly without a migration.
+function normalizeSetKeys(s) {
+  return {
+    kills:         s.kills           || 0,
+    errors:        s.errors          || 0,
+    continuedPlus:  s.continued_plus  || s.continuedPlus  || s.continued || 0,
+    continuedMinus: s.continued_minus || s.continuedMinus || 0,
+    blockKills:    s.block_kills     || s.blockKills     || 0,
+    blockPlus:     s.block_plus      || s.blockPlus      || s.block_positive || s.blockPositive || 0,
+    blockMinus:    s.block_minus     || s.blockMinus     || 0,
+    blockErrors:   s.block_errors    || s.blockErrors    || 0,
+    digPlus:       s.dig_plus        || s.digPlus        || s.dig_perfect || s.digPerfect || 0,
+    digs:          s.digs            || 0,
+    digErrors:     s.dig_errors      || s.digErrors      || 0,
+    pass4:         s.pass_4          || s.pass4          || s.pass_perfect  || s.passPerfect  || 0,
+    pass3:         s.pass_3          || s.pass3          || s.pass_positive || s.passPositive || 0,
+    pass2:         s.pass_2          || s.pass2          || 0,
+    pass1:         s.pass_1          || s.pass1          || 0,
+    pass0:         s.pass_0          || s.pass0          || s.pass_error    || s.passError    || 0,
+  };
+}
+
+// Roll up a session's sets into the four numbers we need for every dashboard
+// card, chart point, and history row. Same loop was getting copy-pasted four
+// times - pulled it out into one place.
+function sessionTotals(s) {
+  let k = 0, e = 0, cp = 0, cm = 0, bk = 0;
+  (s.sets || []).forEach(set => {
+    k  += set.kills           || 0;
+    e  += set.errors          || 0;
+    cp += set.continued_plus  || set.continuedPlus  || 0;
+    cm += set.continued_minus || set.continuedMinus || 0;
+    bk += set.block_kills     || set.blockKills     || 0;
+  });
+  const c = cp + cm;
+  return { k, e, c, bk, att: k + e + c };
+}
+
+// Blocking, defence, and passing live in separate helpers from sessionTotals
+// because they're mode-specific - sessionTotals is called everywhere regardless
+// of mode, so mixing them in would add noise. These are only called when we
+// know we're working with the right session type.
+function sessionBlockingTotals(s) {
+  let bk = 0, bp = 0, bm = 0, be = 0;
+  (s.sets || []).forEach(set => {
+    bk += set.block_kills  || set.blockKills  || 0;
+    bp += set.block_plus   || set.blockPlus   || set.block_positive || 0;
+    bm += set.block_minus  || set.blockMinus  || 0;
+    be += set.block_errors || set.blockErrors || 0;
+  });
+  return { bk, bp, bm, be, total: bk + bp + bm + be };
+}
+
+function sessionDefenceTotals(s) {
+  let dp = 0, d = 0, de = 0;
+  (s.sets || []).forEach(set => {
+    dp += set.dig_plus   || set.digPlus   || 0;
+    d  += set.digs                        || 0;
+    de += set.dig_errors || set.digErrors || 0;
+  });
+  return { dp, d, de, total: dp + d + de };
+}
+
+function sessionPassingTotals(s) {
+  let p4 = 0, p3 = 0, p2 = 0, p1 = 0, p0 = 0;
+  (s.sets || []).forEach(set => {
+    p4 += set.pass_4 || set.pass4 || 0;
+    p3 += set.pass_3 || set.pass3 || 0;
+    p2 += set.pass_2 || set.pass2 || 0;
+    p1 += set.pass_1 || set.pass1 || 0;
+    p0 += set.pass_0 || set.pass0 || 0;
+  });
+  return { p4, p3, p2, p1, p0, total: p4 + p3 + p2 + p1 + p0 };
+}
+
+async function navigate(page, opts = {}) {
+  // Destroy all chart instances before navigating away.
+  chartInstances.forEach(c => c.destroy());
+  chartInstances = [];
+
+  state.page = page;
+  if (opts.sessionId !== undefined) state.sessionId = opts.sessionId;
+
+  if (page === 'entry') {
+    state.entryState = freshEntryState();
+  } else if (page === 'edit') {
+    // Refetch even though the session is usually in state.sessions already -
+    // that cache can be a few seconds stale and edits should always show
+    // the current truth.
+    const s = await api.getSession(opts.sessionId).catch(() => null);
+    state.entryState = freshEntryState(s);
+    state.sessionId = opts.sessionId;
+  }
+
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  await render();
+}
+
+async function render() {
+  renderNav();
+
+  const main = document.getElementById('main');
+  main.innerHTML = '';
+
+  let el;
+  try {
+    switch (state.page) {
+      case 'dashboard': el = await renderDashboard(); break;
+      case 'entry':
+      case 'edit':      el = renderEntry();            break;
+      case 'history':   el = await renderHistory();    break;
+      case 'session':   el = await renderSession();    break;
+      default:          el = await renderDashboard();
+    }
+  } catch (e) {
+    if (e.message === 'UNAUTHORIZED') {
+      showPasswordGate();
+      return;
+    }
+    el = errorPage(e.message);
+  }
+
+  main.appendChild(el);
+}
+
+function errorPage(msg) {
+  const el = document.createElement('div');
+  el.className = 'empty-state';
+  el.innerHTML = `
+    <div class="empty-icon">⚠️</div>
+    <div class="empty-title">Something went wrong</div>
+    <div class="empty-sub">${msg || 'Unknown error'}</div>
+  `;
+  return el;
+}
+
+function showPasswordGate() {
+  document.getElementById('gate').hidden   = false;
+  document.getElementById('app').hidden    = true;
+  document.getElementById('gate-input').value = '';
+  document.getElementById('gate-error').hidden = true;
+}
+
+function hidePasswordGate() {
+  document.getElementById('gate').hidden = true;
+  document.getElementById('app').hidden  = false;
+}
+
+function renderNav() {
+  const nav = document.getElementById('nav');
+  nav.innerHTML = '';
+
+  const inner = document.createElement('div');
+  inner.className = 'nav-inner';
+
+  // Logo
+  const logo = document.createElement('button');
+  logo.className = 'nav-logo';
+  logo.textContent = 'VolleyStats';
+  logo.addEventListener('click', () => navigate('dashboard'));
+  inner.appendChild(logo);
+
+  // Page links
+  const links = document.createElement('div');
+  links.className = 'nav-links';
+
+  [
+    { page: 'dashboard', label: 'Dashboard' },
+    { page: 'history',   label: 'History' },
+    { page: 'entry',     label: 'Log Session' },
+  ].forEach(({ page, label }) => {
+    const btn = document.createElement('button');
+    btn.className = 'nav-link' + (state.page === page ? ' active' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => navigate(page));
+    links.appendChild(btn);
+  });
+
+  inner.appendChild(links);
+
+  // Right side: settings gear + user pill
+  const actions = document.createElement('div');
+  actions.className = 'nav-actions';
+
+  const gearBtn = document.createElement('button');
+  gearBtn.className = 'btn-icon';
+  gearBtn.title = 'Settings';
+  gearBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </svg>`;
+  gearBtn.addEventListener('click', openSettingsModal);
+  actions.appendChild(gearBtn);
+
+  // User pill + dropdown
+  const userWrap = document.createElement('div');
+  userWrap.style.position = 'relative';
+
+  const pill = document.createElement('button');
+  pill.className = 'user-pill';
+
+  const ini = document.createElement('span');
+  ini.className = 'user-initials';
+  ini.textContent = state.currentUser ? initials(state.currentUser.name) : '?';
+
+  const uname = document.createElement('span');
+  uname.className = 'user-name';
+  uname.textContent = state.currentUser?.name || 'No user';
+
+  const caret = document.createElement('span');
+  caret.className = 'user-caret';
+  caret.innerHTML = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+  pill.appendChild(ini);
+  pill.appendChild(uname);
+  pill.appendChild(caret);
+
+  let dropOpen = false;
+  let addingUser = false;
+
+  pill.addEventListener('click', (e) => {
+    e.stopPropagation();
+    dropOpen = !dropOpen;
+    renderDropdown();
+  });
+
+  function renderDropdown() {
+    const existing = userWrap.querySelector('.user-dropdown');
+    if (existing) existing.remove();
+    if (!dropOpen) return;
+
+    const drop = document.createElement('div');
+    drop.className = 'user-dropdown';
+
+    state.users.forEach(u => {
+      const item = document.createElement('button');
+      item.className = 'dropdown-item' + (u.id === state.currentUser?.id ? ' active' : '');
+      item.textContent = u.name;
+      if (u.id === state.currentUser?.id) {
+        const check = document.createElement('span');
+        check.style.cssText = 'margin-left:auto;font-size:0.7rem;opacity:0.7';
+        check.textContent = '✓';
+        item.appendChild(check);
+      }
+      item.addEventListener('click', async () => {
+        state.currentUser = u;
+        localStorage.setItem('vs_user', u.id);
+        state.sessions = await api.getSessions(u.id).catch(() => []);
+        dropOpen = false;
+        navigate('dashboard');
+      });
+      drop.appendChild(item);
+    });
+
+    const divider = document.createElement('hr');
+    divider.className = 'dropdown-divider';
+    drop.appendChild(divider);
+
+    if (addingUser) {
+      const row = document.createElement('div');
+      row.className = 'dropdown-add-row';
+
+      const input = document.createElement('input');
+      input.className = 'dropdown-add-input';
+      input.placeholder = 'Name…';
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); });
+
+      const addBtn = document.createElement('button');
+      addBtn.className = 'btn-primary';
+      addBtn.style.cssText = 'font-size:0.8rem;padding:6px 12px';
+      addBtn.textContent = 'Add';
+      addBtn.addEventListener('click', doAdd);
+
+      async function doAdd() {
+        const name = input.value.trim();
+        if (!name) return;
+        const user = await api.createUser(name).catch(() => null);
+        if (!user) return;
+        state.users = await api.getUsers().catch(() => state.users);
+        state.currentUser = user;
+        localStorage.setItem('vs_user', user.id);
+        state.sessions = await api.getSessions(user.id).catch(() => []);
+        dropOpen = false;
+        addingUser = false;
+        navigate('dashboard');
+      }
+
+      row.appendChild(input);
+      row.appendChild(addBtn);
+      drop.appendChild(row);
+      setTimeout(() => input.focus(), 0);
+    } else {
+      const newUserBtn = document.createElement('button');
+      newUserBtn.className = 'dropdown-item';
+      newUserBtn.style.color = 'var(--accent)';
+      newUserBtn.textContent = '+ New User';
+      newUserBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        addingUser = true;
+        renderDropdown();
+      });
+      drop.appendChild(newUserBtn);
+    }
+
+    userWrap.appendChild(drop);
+  }
+
+  // Close the dropdown on any outside click.
+  document.addEventListener('click', function closeOnOutside() {
+    if (dropOpen) { dropOpen = false; addingUser = false; renderDropdown(); }
+    document.removeEventListener('click', closeOnOutside);
+  });
+
+  userWrap.appendChild(pill);
+  actions.appendChild(userWrap);
+  inner.appendChild(actions);
+  nav.appendChild(inner);
+}
+
+function openSettingsModal() {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.addEventListener('click', e => e.stopPropagation());
+
+  function rebuild() {
+    modal.innerHTML = '';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    const title = document.createElement('span');
+    title.className = 'modal-title';
+    title.textContent = 'Settings';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'modal-close';
+    closeBtn.textContent = '×';
+    closeBtn.addEventListener('click', () => backdrop.remove());
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    modal.appendChild(header);
+
+    // ── Accent colour
+    const colourSection = document.createElement('div');
+    colourSection.className = 'settings-section';
+    const colourTitle = document.createElement('div');
+    colourTitle.className = 'settings-section-title';
+    colourTitle.textContent = 'Accent Color';
+    colourSection.appendChild(colourTitle);
+
+    const swatches = document.createElement('div');
+    swatches.className = 'color-swatches';
+
+    ACCENT_PRESETS.forEach(hex => {
+      const swatch = document.createElement('button');
+      swatch.className = 'color-swatch' + (settings.accentColor === hex ? ' selected' : '');
+      swatch.style.background = hex;
+      swatch.title = hex;
+      swatch.addEventListener('click', () => {
+        saveSetting('accentColor', hex);
+        rebuild();
+        renderNav();
+      });
+      swatches.appendChild(swatch);
+    });
+
+    // Custom colour picker for anyone who wants something off the preset list.
+    const customRow = document.createElement('div');
+    customRow.className = 'color-custom-row';
+    const customInput = document.createElement('input');
+    customInput.type = 'color';
+    customInput.className = 'color-custom-input';
+    customInput.value = settings.accentColor;
+    customInput.title = 'Custom colour';
+    customInput.addEventListener('input', e => {
+      saveSetting('accentColor', e.target.value);
+      renderNav();
+    });
+    const customLabel = document.createElement('span');
+    customLabel.style.cssText = 'font-size:0.75rem;color:var(--text-sec)';
+    customLabel.textContent = 'Custom';
+    customRow.appendChild(customInput);
+    customRow.appendChild(customLabel);
+    swatches.appendChild(customRow);
+    colourSection.appendChild(swatches);
+    modal.appendChild(colourSection);
+
+  }
+
+  rebuild();
+  backdrop.appendChild(modal);
+  backdrop.addEventListener('click', () => backdrop.remove());
+  document.body.appendChild(backdrop);
+}
+
+async function renderDashboard() {
+  const page = document.createElement('div');
+  page.className = 'page';
+
+  if (!state.currentUser) {
+    page.appendChild(emptyStateEl('🏐', 'Welcome to VolleyStats', 'Add a user from the top-right to get started.'));
+    return page;
+  }
+
+  // Refetch on every visit so edits + deletes elsewhere are reflected here.
+  state.sessions = await api.getSessions(state.currentUser.id).catch(() => []);
+
+  // Chart wants oldest-first; the recent list wants newest-first.
+  const chronological = [...state.sessions].sort((a, b) => new Date(a.event_date) - new Date(b.event_date));
+
+  const header = document.createElement('div');
+  header.className = 'page-header';
+  const heading = document.createElement('h1');
+  heading.className = 'page-heading';
+  heading.textContent = 'Dashboard';
+  const userName = document.createElement('span');
+  userName.style.cssText = 'font-size:0.875rem;color:var(--text-sec)';
+  userName.textContent = state.currentUser.name;
+  header.appendChild(heading);
+  header.appendChild(userName);
+  page.appendChild(header);
+
+  // ── Summary cards
+  page.appendChild(renderSummaryCards(state.sessions));
+
+  // ── Charts (2-per-row on desktop, 1-per-row on tablet/mobile)
+  const chartsGrid = document.createElement('div');
+  chartsGrid.className = 'charts-grid';
+
+  chartsGrid.appendChild(renderChartCard(chronological));
+  const blkCard  = renderBlockingChartCard(chronological);
+  if (blkCard)  chartsGrid.appendChild(blkCard);
+  const defCard  = renderDefenceChartCard(chronological);
+  if (defCard)  chartsGrid.appendChild(defCard);
+  const passCard = renderPassingChartCard(chronological);
+  if (passCard) chartsGrid.appendChild(passCard);
+
+  page.appendChild(chartsGrid);
+
+  // ── Recent sessions
+  if (state.sessions.length > 0) {
+    page.appendChild(renderRecentList(state.sessions));
+  }
+
+  return page;
+}
+
+function renderSummaryCards(sessions) {
+  const row = document.createElement('div');
+  row.className = 'cards-row';
+
+  // Aggregate every set across every session into one set of totals.
+  const totals = sessions.reduce((acc, s) => {
+    const t = sessionTotals(s);
+    acc.k += t.k; acc.e += t.e; acc.c += t.c; acc.bk += t.bk;
+    return acc;
+  }, { k: 0, e: 0, c: 0, bk: 0 });
+  const att = totals.k + totals.e + totals.c;
+  const has = sessions.length > 0 && att > 0;
+  const eff = has ? (totals.k + totals.bk - totals.e) / att : 0;
+
+  const cards = [
+    { label: 'Kill %',       value: has ? (totals.k / att * 100).toFixed(1) + '%' : '-', sub: 'all time', color: null },
+    { label: 'Error %',      value: has ? (totals.e / att * 100).toFixed(1) + '%' : '-', sub: 'all time', color: null },
+    { label: 'Efficiency %', value: has ? (eff * 100).toFixed(1) + '%' : '-',           sub: 'all time', color: has ? effColor(eff) : null },
+    { label: 'Attempts',     value: has ? att.toLocaleString() : '-',                   sub: `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`, color: null },
+  ];
+
+  cards.forEach(({ label, value, sub, color }) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    const lbl = document.createElement('div');
+    lbl.className = 'summary-card-label';
+    lbl.textContent = label;
+
+    const val = document.createElement('div');
+    val.className = 'summary-card-value';
+    val.textContent = value;
+    if (color) val.style.color = color;
+
+    const s = document.createElement('div');
+    s.className = 'summary-card-sub';
+    s.textContent = sub;
+
+    card.appendChild(lbl);
+    card.appendChild(val);
+    card.appendChild(s);
+    row.appendChild(card);
+  });
+
+  return row;
+}
+
+function renderChartCard(sessions) {
+  const card = document.createElement('div');
+  card.className = 'card';
+
+  const chartData = sessions.map(s => {
+    const { k, e, bk, att } = sessionTotals(s);
+    // Compute cp/cm inline since sessionTotals only returns the combined c.
+    let cp = 0, cm = 0;
+    (s.sets || []).forEach(set => {
+      cp += set.continued_plus  || set.continuedPlus  || 0;
+      cm += set.continued_minus || set.continuedMinus || 0;
+    });
+    return {
+      label:        s.event_name,
+      date:         s.event_date,
+      efficiency:   att ? (k + bk - e) / att : 0,
+      killPct:      att ? k  / att : 0,
+      errorPct:     att ? e  / att : 0,
+      contPlusPct:  att ? cp / att : 0,
+      contMinusPct: att ? cm / att : 0,
+      attempts:     att,
+    };
+  });
+
+  const chartHeader = document.createElement('div');
+  chartHeader.className = 'chart-header';
+
+  const chartTitle = document.createElement('div');
+  chartTitle.className = 'chart-title';
+  chartTitle.textContent = 'Attack Over Time';
+
+  const controls = document.createElement('div');
+  controls.className = 'chart-controls';
+
+  let showEffLine = true, showKillLine = true, showErrLine = true;
+  let showContPlusLine = true, showContMinusLine = true;
+
+  function makeOverlayToggle(label, getState, setState) {
+    const btn = document.createElement('button');
+    btn.className = 'chart-toggle' + (getState() ? ' on-accent' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      setState(!getState());
+      btn.className = 'chart-toggle' + (getState() ? ' on-accent' : '');
+      rebuildChart();
+    });
+    return btn;
+  }
+
+  const effBtn  = makeOverlayToggle('Efficiency',   () => showEffLine,       v => { showEffLine       = v; });
+  const killBtn = makeOverlayToggle('Kill %',       () => showKillLine,      v => { showKillLine      = v; });
+  const errBtn  = makeOverlayToggle('Error %',      () => showErrLine,       v => { showErrLine       = v; });
+  const cpBtn   = makeOverlayToggle('Cont Plus %',  () => showContPlusLine,  v => { showContPlusLine  = v; });
+  const cmBtn   = makeOverlayToggle('Cont Minus %', () => showContMinusLine, v => { showContMinusLine = v; });
+
+  controls.appendChild(effBtn);
+  controls.appendChild(killBtn);
+  controls.appendChild(errBtn);
+  controls.appendChild(cpBtn);
+  controls.appendChild(cmBtn);
+  chartHeader.appendChild(chartTitle);
+  chartHeader.appendChild(controls);
+  card.appendChild(chartHeader);
+
+  if (!chartData.length) {
+    const empty = document.createElement('div');
+    empty.className = 'chart-empty';
+    empty.innerHTML = `<div style="font-size:2rem;opacity:0.3">📈</div>
+      <div>Log sessions to see your efficiency trend</div>`;
+    const logBtn = document.createElement('button');
+    logBtn.className = 'btn-accent-sm';
+    logBtn.textContent = 'Log Session';
+    logBtn.addEventListener('click', () => navigate('entry'));
+    empty.appendChild(logBtn);
+    card.appendChild(empty);
+    return card;
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'chart-wrap';
+  const canvas = document.createElement('canvas');
+  wrap.appendChild(canvas);
+  card.appendChild(wrap);
+
+  let myChart = null;
+
+  function rebuildChart() {
+    if (myChart) {
+      const idx = chartInstances.indexOf(myChart);
+      if (idx !== -1) chartInstances.splice(idx, 1);
+      myChart.destroy();
+      myChart = null;
+    }
+
+    const labels    = chartData.map(d => fmtDate(d.date, { month: 'short', day: 'numeric' }));
+    const effData   = chartData.map(d => +(d.efficiency    * 100).toFixed(1));
+    const killData  = chartData.map(d => +(d.killPct       * 100).toFixed(1));
+    const errData   = chartData.map(d => +(d.errorPct      * 100).toFixed(1));
+    const cpData    = chartData.map(d => +(d.contPlusPct   * 100).toFixed(1));
+    const cmData    = chartData.map(d => +(d.contMinusPct  * 100).toFixed(1));
+
+    const pointColors = effData.map(v => effColor(v / 100));
+
+    const datasets = [];
+
+    if (showEffLine) {
+      datasets.push({
+        label: 'Efficiency %',
+        data: effData,
+        borderColor: settings.accentColor,
+        backgroundColor: hexToRgba(settings.accentColor, 0.1),
+        fill: true,
+        tension: 0.3,
+        borderWidth: 2,
+        pointBackgroundColor: pointColors,
+        pointBorderColor: pointColors,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+      });
+    }
+
+    if (showKillLine) {
+      datasets.push({
+        label: 'Kill %',
+        data: killData,
+        borderColor: '#60A5FA',
+        backgroundColor: 'transparent',
+        fill: false,
+        tension: 0.3,
+        borderWidth: 2,
+        borderDash: [5, 4],
+        pointBackgroundColor: '#60A5FA',
+        pointBorderColor: '#60A5FA',
+        pointRadius: 4,
+        pointHoverRadius: 6,
+      });
+    }
+
+    if (showErrLine) {
+      datasets.push({
+        label: 'Error %',
+        data: errData,
+        borderColor: '#F87171',
+        backgroundColor: 'transparent',
+        fill: false, tension: 0.3, borderWidth: 2, borderDash: [5, 4],
+        pointBackgroundColor: '#F87171', pointBorderColor: '#F87171',
+        pointRadius: 4, pointHoverRadius: 6,
+      });
+    }
+
+    if (showContPlusLine) {
+      datasets.push({
+        label: 'Cont Plus %',
+        data: cpData,
+        borderColor: '#6EE7B7',
+        backgroundColor: 'transparent',
+        fill: false, tension: 0.3, borderWidth: 2, borderDash: [5, 4],
+        pointBackgroundColor: '#6EE7B7', pointBorderColor: '#6EE7B7',
+        pointRadius: 4, pointHoverRadius: 6,
+      });
+    }
+
+    if (showContMinusLine) {
+      datasets.push({
+        label: 'Cont Minus %',
+        data: cmData,
+        borderColor: '#FBBF24',
+        backgroundColor: 'transparent',
+        fill: false, tension: 0.3, borderWidth: 2, borderDash: [5, 4],
+        pointBackgroundColor: '#FBBF24', pointBorderColor: '#FBBF24',
+        pointRadius: 4, pointHoverRadius: 6,
+      });
+    }
+
+    myChart = new Chart(canvas, {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            enabled: false,
+            external: makeExternalTooltip(chartData, d => [
+              ['Efficiency',   `${(d.efficiency  * 100).toFixed(1)}%`],
+              ['Kill %',       `${(d.killPct      * 100).toFixed(1)}%`],
+              ['Error %',      `${(d.errorPct     * 100).toFixed(1)}%`],
+              ['Cont Plus %',  `${(d.contPlusPct  * 100).toFixed(1)}%`],
+              ['Cont Minus %', `${(d.contMinusPct * 100).toFixed(1)}%`],
+              ['Attempts',     d.attempts],
+            ]),
+          },
+        },
+        scales: {
+          x: {
+            grid: { color: '#2E3350' },
+            ticks: { color: '#8B90A8', font: { size: 11 } },
+            border: { color: '#2E3350' },
+          },
+          y: {
+            min: 0, max: 100,
+            grid: { color: '#2E3350' },
+            ticks: { color: '#8B90A8', font: { size: 11 }, callback: v => v + '%' },
+            border: { color: '#2E3350' },
+          },
+        },
+      },
+      plugins: [],
+    });
+    chartInstances.push(myChart);
+  }
+
+  requestAnimationFrame(rebuildChart);
+  return card;
+}
+
+// Hex → rgba() for Chart.js background fills.
+function hexToRgba(hex, alpha) {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// External tooltip renderer for all chart cards.
+// getRows(d) receives the chartData entry and returns [[label, value], ...].
+function makeExternalTooltip(chartData, getRows) {
+  return function({ chart, tooltip }) {
+    const wrap = chart.canvas.parentNode;
+    let el = wrap.querySelector('.chart-tip');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'chart-tip';
+      wrap.appendChild(el);
+    }
+
+    if (tooltip.opacity === 0) { el.style.opacity = '0'; return; }
+
+    const d    = chartData[tooltip.dataPoints[0].dataIndex];
+    const date = fmtDate(d.date, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    const rows = getRows(d);
+
+    el.innerHTML =
+      `<div class="chart-tip-title">${d.label}</div>` +
+      `<div class="chart-tip-date">${date}</div>` +
+      `<table class="chart-tip-table">` +
+      rows.map(([lbl, val]) =>
+        `<tr><td class="chart-tip-lbl">${lbl}</td><td class="chart-tip-val">${val}</td></tr>`
+      ).join('') +
+      `</table>`;
+
+    el.style.opacity = '1';
+
+    // Flip left when caret is past 55% of chart width so it doesn't clip.
+    const flipLeft  = tooltip.caretX > chart.width * 0.55;
+    el.style.left   = flipLeft ? 'auto' : (tooltip.caretX + 14) + 'px';
+    el.style.right  = flipLeft ? (chart.width - tooltip.caretX + 14) + 'px' : 'auto';
+    el.style.top    = Math.max(0, tooltip.caretY - 20) + 'px';
+  };
+}
+
+// Shared chart scaffold - card + header (with controls slot) + canvas.
+function makeChartShell(title) {
+  const card = document.createElement('div');
+  card.className = 'card';
+
+  const header = document.createElement('div');
+  header.className = 'chart-header';
+  const titleEl = document.createElement('div');
+  titleEl.className = 'chart-title';
+  titleEl.textContent = title;
+  const controls = document.createElement('div');
+  controls.className = 'chart-controls';
+  header.appendChild(titleEl);
+  header.appendChild(controls);
+  card.appendChild(header);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'chart-wrap';
+  const canvas = document.createElement('canvas');
+  wrap.appendChild(canvas);
+  card.appendChild(wrap);
+
+  return { card, canvas, controls };
+}
+
+function renderBlockingChartCard(sessions) {
+  // Same ≥2 guard - needs blocking data from offence_blocking or full_game sessions.
+  const eligible = sessions.filter(s => sessionBlockingTotals(s).total > 0);
+  if (eligible.length < 2) return null;
+
+  const chartData = eligible.map(s => {
+    const { bk, bp, be, total } = sessionBlockingTotals(s);
+    return {
+      label:      s.event_name,
+      date:       s.event_date,
+      blkKillPct: total ? bk / total : 0,
+      blkPlusPct: total ? bp / total : 0,
+      blkErrPct:  total ? be / total : 0,
+    };
+  });
+
+  const { card, canvas, controls } = makeChartShell('Blocking Over Time');
+
+  // All three lines start visible; toggles let you hide individual ones.
+  let showKill = true, showPlus = true, showErr = true;
+
+  function makeToggle(label, getState, setState) {
+    const btn = document.createElement('button');
+    btn.className = 'chart-toggle' + (getState() ? ' on-accent' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      setState(!getState());
+      btn.className = 'chart-toggle' + (getState() ? ' on-accent' : '');
+      rebuildChart();
+    });
+    return btn;
+  }
+
+  controls.appendChild(makeToggle('Block Kill %', () => showKill, v => { showKill = v; }));
+  controls.appendChild(makeToggle('Block Plus %', () => showPlus, v => { showPlus = v; }));
+  controls.appendChild(makeToggle('Block Error %', () => showErr,  v => { showErr  = v; }));
+
+  // Each chart card keeps its own `myChart` reference in a closure so toggle
+  // rebuilds only destroy this card's instance - not all charts on the page.
+  let myChart = null;
+
+  function rebuildChart() {
+    if (myChart) {
+      const idx = chartInstances.indexOf(myChart);
+      if (idx !== -1) chartInstances.splice(idx, 1);
+      myChart.destroy();
+      myChart = null;
+    }
+
+    const labels = chartData.map(d => fmtDate(d.date, { month: 'short', day: 'numeric' }));
+    const datasets = [];
+
+    if (showKill) datasets.push({
+      label: 'Block Kill %',
+      data: chartData.map(d => +(d.blkKillPct * 100).toFixed(1)),
+      borderColor: '#34D399', backgroundColor: 'rgba(52,211,153,0.08)',
+      fill: true, tension: 0.3, borderWidth: 2,
+      pointBackgroundColor: '#34D399', pointBorderColor: '#34D399',
+      pointRadius: 4, pointHoverRadius: 6,
+    });
+    if (showPlus) datasets.push({
+      label: 'Block Plus %',
+      data: chartData.map(d => +(d.blkPlusPct * 100).toFixed(1)),
+      borderColor: '#6EE7B7', backgroundColor: 'transparent',
+      fill: false, tension: 0.3, borderWidth: 2, borderDash: [4, 3],
+      pointBackgroundColor: '#6EE7B7', pointBorderColor: '#6EE7B7',
+      pointRadius: 3, pointHoverRadius: 5,
+    });
+    if (showErr) datasets.push({
+      label: 'Block Error %',
+      data: chartData.map(d => +(d.blkErrPct * 100).toFixed(1)),
+      borderColor: '#F87171', backgroundColor: 'transparent',
+      fill: false, tension: 0.3, borderWidth: 2, borderDash: [4, 3],
+      pointBackgroundColor: '#F87171', pointBorderColor: '#F87171',
+      pointRadius: 3, pointHoverRadius: 5,
+    });
+
+    myChart = new Chart(canvas, {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            enabled: false,
+            external: makeExternalTooltip(chartData, d => [
+              ['Block Kill %',  `${(d.blkKillPct * 100).toFixed(1)}%`],
+              ['Block Plus %',  `${(d.blkPlusPct * 100).toFixed(1)}%`],
+              ['Block Error %', `${(d.blkErrPct  * 100).toFixed(1)}%`],
+            ]),
+          },
+        },
+        scales: {
+          x: { grid: { color: '#2E3350' }, ticks: { color: '#8B90A8', font: { size: 11 } }, border: { color: '#2E3350' } },
+          y: { min: 0, max: 100, grid: { color: '#2E3350' }, ticks: { color: '#8B90A8', font: { size: 11 }, callback: v => v + '%' }, border: { color: '#2E3350' } },
+        },
+      },
+    });
+    chartInstances.push(myChart);
+  }
+
+  requestAnimationFrame(rebuildChart);
+  return card;
+}
+
+function renderDefenceChartCard(sessions) {
+  // Need at least 2 sessions with dig data to draw a meaningful trend line -
+  // a single point just floats at x=0 with no context.
+  const eligible = sessions.filter(s => sessionDefenceTotals(s).total > 0);
+  if (eligible.length < 2) return null;
+
+  const chartData = eligible.map(s => {
+    const { dp, d, de, total } = sessionDefenceTotals(s);
+    return {
+      label:      s.event_name,
+      date:       s.event_date,
+      digPlusPct: total ? dp / total : 0,
+      digPct:     total ? d  / total : 0,
+      digErrPct:  total ? de / total : 0,
+    };
+  });
+
+  const { card, canvas, controls } = makeChartShell('Defence Over Time');
+
+  let showDigPlus = true, showDig = true, showDigErr = true;
+
+  function makeToggle(label, getState, setState) {
+    const btn = document.createElement('button');
+    btn.className = 'chart-toggle' + (getState() ? ' on-accent' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      setState(!getState());
+      btn.className = 'chart-toggle' + (getState() ? ' on-accent' : '');
+      rebuildChart();
+    });
+    return btn;
+  }
+
+  controls.appendChild(makeToggle('Dig Plus %',  () => showDigPlus, v => { showDigPlus = v; }));
+  controls.appendChild(makeToggle('Dig %',        () => showDig,     v => { showDig     = v; }));
+  controls.appendChild(makeToggle('Dig Error %',  () => showDigErr,  v => { showDigErr  = v; }));
+
+  // Each chart card keeps its own `myChart` reference in a closure so toggle
+  // rebuilds only destroy this card's instance - not all charts on the page.
+  let myChart = null;
+
+  function rebuildChart() {
+    if (myChart) {
+      const idx = chartInstances.indexOf(myChart);
+      if (idx !== -1) chartInstances.splice(idx, 1);
+      myChart.destroy();
+      myChart = null;
+    }
+
+    const labels   = chartData.map(d => fmtDate(d.date, { month: 'short', day: 'numeric' }));
+    const datasets = [];
+
+    if (showDigPlus) datasets.push({
+      label: 'Dig Plus %',
+      data: chartData.map(d => +(d.digPlusPct * 100).toFixed(1)),
+      borderColor: '#34D399', backgroundColor: 'rgba(52,211,153,0.08)',
+      fill: true, tension: 0.3, borderWidth: 2,
+      pointBackgroundColor: '#34D399', pointBorderColor: '#34D399',
+      pointRadius: 4, pointHoverRadius: 6,
+    });
+    if (showDig) datasets.push({
+      label: 'Dig %',
+      data: chartData.map(d => +(d.digPct * 100).toFixed(1)),
+      borderColor: '#8B90A8', backgroundColor: 'transparent',
+      fill: false, tension: 0.3, borderWidth: 2, borderDash: [4, 3],
+      pointBackgroundColor: '#8B90A8', pointBorderColor: '#8B90A8',
+      pointRadius: 3, pointHoverRadius: 5,
+    });
+    if (showDigErr) datasets.push({
+      label: 'Dig Error %',
+      data: chartData.map(d => +(d.digErrPct * 100).toFixed(1)),
+      borderColor: '#F87171', backgroundColor: 'transparent',
+      fill: false, tension: 0.3, borderWidth: 2, borderDash: [4, 3],
+      pointBackgroundColor: '#F87171', pointBorderColor: '#F87171',
+      pointRadius: 3, pointHoverRadius: 5,
+    });
+
+    myChart = new Chart(canvas, {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            enabled: false,
+            external: makeExternalTooltip(chartData, d => [
+              ['Dig Plus %',  `${(d.digPlusPct * 100).toFixed(1)}%`],
+              ['Dig %',       `${(d.digPct     * 100).toFixed(1)}%`],
+              ['Dig Error %', `${(d.digErrPct  * 100).toFixed(1)}%`],
+            ]),
+          },
+        },
+        scales: {
+          x: { grid: { color: '#2E3350' }, ticks: { color: '#8B90A8', font: { size: 11 } }, border: { color: '#2E3350' } },
+          y: { min: 0, max: 100, grid: { color: '#2E3350' }, ticks: { color: '#8B90A8', font: { size: 11 }, callback: v => v + '%' }, border: { color: '#2E3350' } },
+        },
+      },
+    });
+    chartInstances.push(myChart);
+  }
+
+  requestAnimationFrame(rebuildChart);
+  return card;
+}
+
+function renderPassingChartCard(sessions) {
+  // Same ≥2 guard as the defence chart - one data point isn't a trend.
+  const eligible = sessions.filter(s => sessionPassingTotals(s).total > 0);
+  if (eligible.length < 2) return null;
+
+  const chartData = eligible.map(s => {
+    const { p4, p3, p2, p1, p0, total } = sessionPassingTotals(s);
+    return {
+      label: s.event_name,
+      date:  s.event_date,
+      p4Pct: total ? p4 / total : 0,
+      p3Pct: total ? p3 / total : 0,
+      p2Pct: total ? p2 / total : 0,
+      p1Pct: total ? p1 / total : 0,
+      p0Pct: total ? p0 / total : 0,
+    };
+  });
+
+  const { card, canvas, controls } = makeChartShell('Passing Over Time');
+
+  // All five grade lines start visible; same toggle behaviour as Blocking/Defence.
+  let show4 = true, show3 = true, show2 = true, show1 = true, show0 = true;
+
+  const gradeLines = [
+    { label: '4-Pass %', color: '#34D399', getState: () => show4, setState: v => { show4 = v; } },
+    { label: '3-Pass %', color: '#6EE7B7', getState: () => show3, setState: v => { show3 = v; } },
+    { label: '2-Pass %', color: '#8B90A8', getState: () => show2, setState: v => { show2 = v; } },
+    { label: '1-Pass %', color: '#FBBF24', getState: () => show1, setState: v => { show1 = v; } },
+    { label: '0-Pass %', color: '#F87171', getState: () => show0, setState: v => { show0 = v; } },
+  ];
+
+  gradeLines.forEach(({ label, getState, setState }) => {
+    const btn = document.createElement('button');
+    btn.className = 'chart-toggle on-accent';
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      setState(!getState());
+      btn.className = 'chart-toggle' + (getState() ? ' on-accent' : '');
+      rebuildChart();
+    });
+    controls.appendChild(btn);
+  });
+
+  let myChart = null;
+
+  function rebuildChart() {
+    if (myChart) {
+      const idx = chartInstances.indexOf(myChart);
+      if (idx !== -1) chartInstances.splice(idx, 1);
+      myChart.destroy();
+      myChart = null;
+    }
+
+    const labels   = chartData.map(d => fmtDate(d.date, { month: 'short', day: 'numeric' }));
+    const datasets = [];
+
+    const gradeDatasets = [
+      { show: show4, key: 'p4Pct', label: '4-Pass %', color: '#34D399', fill: true,  bg: 'rgba(52,211,153,0.08)' },
+      { show: show3, key: 'p3Pct', label: '3-Pass %', color: '#6EE7B7', fill: false, bg: 'transparent' },
+      { show: show2, key: 'p2Pct', label: '2-Pass %', color: '#8B90A8', fill: false, bg: 'transparent' },
+      { show: show1, key: 'p1Pct', label: '1-Pass %', color: '#FBBF24', fill: false, bg: 'transparent' },
+      { show: show0, key: 'p0Pct', label: '0-Pass %', color: '#F87171', fill: false, bg: 'transparent' },
+    ];
+
+    gradeDatasets.forEach(({ show, key, label, color, fill, bg }) => {
+      if (!show) return;
+      datasets.push({
+        label,
+        data: chartData.map(d => +(d[key] * 100).toFixed(1)),
+        borderColor: color, backgroundColor: bg,
+        fill, tension: 0.3, borderWidth: 2,
+        pointBackgroundColor: color, pointBorderColor: color,
+        pointRadius: 4, pointHoverRadius: 6,
+      });
+    });
+
+    myChart = new Chart(canvas, {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            enabled: false,
+            external: makeExternalTooltip(chartData, d => [
+              ['4-Pass %', `${(d.p4Pct * 100).toFixed(1)}%`],
+              ['3-Pass %', `${(d.p3Pct * 100).toFixed(1)}%`],
+              ['2-Pass %', `${(d.p2Pct * 100).toFixed(1)}%`],
+              ['1-Pass %', `${(d.p1Pct * 100).toFixed(1)}%`],
+              ['0-Pass %', `${(d.p0Pct * 100).toFixed(1)}%`],
+            ]),
+          },
+        },
+        scales: {
+          x: { grid: { color: '#2E3350' }, ticks: { color: '#8B90A8', font: { size: 11 } }, border: { color: '#2E3350' } },
+          y: { min: 0, max: 100, grid: { color: '#2E3350' }, ticks: { color: '#8B90A8', font: { size: 11 }, callback: v => v + '%' }, border: { color: '#2E3350' } },
+        },
+      },
+    });
+    chartInstances.push(myChart);
+  }
+
+  requestAnimationFrame(rebuildChart);
+  return card;
+}
+
+function renderRecentList(sessions) {
+  const wrap = document.createElement('div');
+  wrap.className = 'card';
+  wrap.style.padding = '0';
+  wrap.style.overflow = 'hidden';
+
+  const header = document.createElement('div');
+  header.className = 'recent-header';
+
+  const title = document.createElement('span');
+  title.className = 'recent-title';
+  title.textContent = 'Recent Sessions';
+
+  const viewAll = document.createElement('button');
+  viewAll.className = 'btn-ghost-link';
+  viewAll.textContent = 'View all →';
+  viewAll.addEventListener('click', () => navigate('history'));
+
+  header.appendChild(title);
+  header.appendChild(viewAll);
+  wrap.appendChild(header);
+
+  // Five most recent.
+  [...sessions]
+    .sort((a, b) => new Date(b.event_date) - new Date(a.event_date))
+    .slice(0, 5)
+    .forEach(s => {
+      const { k, e, bk, att } = sessionTotals(s);
+      const eff = att ? (k + bk - e) / att : null;
+
+      const row = document.createElement('div');
+      row.className = 'recent-row';
+      row.addEventListener('click', () => navigate('session', { sessionId: s.id }));
+
+      const left = document.createElement('div');
+      const eventName = document.createElement('div');
+      eventName.className = 'recent-event';
+      eventName.textContent = s.event_name;
+      const date = document.createElement('div');
+      date.className = 'recent-date';
+      date.textContent = fmtDate(s.event_date, { month: 'short', day: 'numeric', year: 'numeric' });
+      left.appendChild(eventName);
+      left.appendChild(date);
+
+      const right = document.createElement('div');
+      right.className = 'recent-right';
+
+      const badge = document.createElement('span');
+      badge.className = `mode-badge mode-${s.mode}`;
+      badge.textContent = MODE_LABELS[s.mode] || s.mode;
+
+      const effEl = document.createElement('div');
+      effEl.className = 'recent-eff';
+      effEl.style.color = eff !== null ? effColor(eff) : 'var(--text-dis)';
+      effEl.textContent = eff !== null ? (eff * 100).toFixed(1) + '%' : '-';
+
+      right.appendChild(badge);
+      right.appendChild(effEl);
+      row.appendChild(left);
+      row.appendChild(right);
+      wrap.appendChild(row);
+    });
+
+  return wrap;
+}
+
+// The entry form is the one page that doesn't get a full redraw on every
+// state change - that would steal focus out of the text inputs while you're
+// mid-type. Instead, the text fields are rendered once, and Film Review taps
+// / +- buttons swap out just the stats card and live preview underneath them.
+function renderEntry() {
+  const es = state.entryState;
+  const isEdit = state.page === 'edit';
+
+  const page = document.createElement('div');
+  page.className = 'page-narrow';
+
+  // Session info - name, date, notes
+  const infoCard = document.createElement('div');
+  infoCard.className = 'card-sm';
+
+  const infoLabel = document.createElement('div');
+  infoLabel.className = 'section-label';
+  infoLabel.textContent = 'Session Info';
+  infoCard.appendChild(infoLabel);
+
+  const stack = document.createElement('div');
+  stack.className = 'field-stack';
+
+  const nameWrap = document.createElement('div');
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'input' + (es.errors.eventName ? ' input-error' : '');
+  nameInput.placeholder = 'e.g. Tuesday League vs. Rebels';
+  nameInput.value = es.eventName;
+  nameInput.addEventListener('input', e => {
+    es.eventName = e.target.value;
+    if (es.errors.eventName) { es.errors.eventName = null; nameInput.className = 'input'; }
+  });
+  nameWrap.appendChild(nameInput);
+  if (es.errors.eventName) {
+    const msg = document.createElement('div');
+    msg.className = 'error-msg';
+    msg.textContent = es.errors.eventName;
+    nameWrap.appendChild(msg);
+  }
+
+  const dateWrap = document.createElement('div');
+  const dateInput = document.createElement('input');
+  dateInput.type = 'date';
+  dateInput.className = 'input' + (es.errors.eventDate ? ' input-error' : '');
+  dateInput.value = es.eventDate;
+  dateInput.addEventListener('input', e => {
+    es.eventDate = e.target.value;
+    if (es.errors.eventDate) { es.errors.eventDate = null; dateInput.className = 'input'; }
+  });
+  dateWrap.appendChild(dateInput);
+
+  const notesInput = document.createElement('textarea');
+  notesInput.className = 'input';
+  notesInput.placeholder = 'Optional notes, context, conditions…';
+  notesInput.rows = 3;
+  notesInput.style.resize = 'vertical';
+  notesInput.value = es.notes;
+  notesInput.addEventListener('input', e => { es.notes = e.target.value; });
+
+  stack.appendChild(nameWrap);
+  stack.appendChild(dateWrap);
+  stack.appendChild(notesInput);
+  infoCard.appendChild(stack);
+  page.appendChild(infoCard);
+
+  // Stat mode pills (Offence / Offence+Blocking / Full Game)
+  const modeCard = document.createElement('div');
+  modeCard.className = 'card-sm';
+  const modeLabel = document.createElement('div');
+  modeLabel.className = 'section-label';
+  modeLabel.textContent = 'Stat Mode';
+  modeCard.appendChild(modeLabel);
+
+  const modeRow = document.createElement('div');
+  modeRow.className = 'mode-row';
+  MODES.forEach(m => {
+    const btn = document.createElement('button');
+    btn.className = 'mode-pill' + (es.mode === m.id ? ' active' : '');
+    btn.textContent = m.label;
+    btn.addEventListener('click', () => {
+      es.mode = m.id;
+      // Re-render the full entry page so the stat grid updates.
+      const newPage = renderEntry();
+      page.replaceWith(newPage);
+    });
+    modeRow.appendChild(btn);
+  });
+  modeCard.appendChild(modeRow);
+  page.appendChild(modeCard);
+
+  // Tabs + the stat grid / Film Review buttons
+  const statsCard = document.createElement('div');
+  statsCard.className = 'card-sm';
+  statsCard.id = 'stats-card';
+
+  renderTabBar(statsCard, page, es);
+  renderStatsAndFilm(statsCard, es);
+
+  page.appendChild(statsCard);
+
+  // Live-updating preview bar (Kill% / Err% / Eff% / Att)
+  page.appendChild(renderLivePreview(es));
+
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'submit-btn';
+  const isDisabled = !es.eventName.trim() || !es.eventDate;
+  submitBtn.disabled = isDisabled;
+  submitBtn.textContent = isEdit ? 'Update Session' : 'Save Session';
+  submitBtn.addEventListener('click', async () => {
+    // Pull the text-field values fresh - they're uncontrolled inputs so the
+    // DOM is the source of truth, not es.
+    es.eventName = nameInput.value.trim();
+    es.eventDate = dateInput.value;
+    es.notes     = notesInput.value;
+
+    if (!es.eventName) { es.errors.eventName = 'Event name is required'; const n = renderEntry(); page.replaceWith(n); return; }
+    if (!es.eventDate) { es.errors.eventDate = 'Date is required'; const n = renderEntry(); page.replaceWith(n); return; }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Saving…';
+
+    const payload = {
+      userId:    state.currentUser.id,
+      eventName: es.eventName,
+      eventDate: es.eventDate,
+      notes:     es.notes,
+      mode:      es.mode,
+      sets:      es.sets,
+    };
+
+    try {
+      let saved;
+      if (isEdit) {
+        saved = await api.updateSession(state.sessionId, payload);
+      } else {
+        saved = await api.createSession(payload);
+      }
+      state.sessions = await api.getSessions(state.currentUser.id).catch(() => state.sessions);
+      navigate('session', { sessionId: saved.id });
+    } catch (err) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = isEdit ? 'Update Session' : 'Save Session';
+      alert('Save failed: ' + err.message);
+    }
+  });
+
+  // Keep the submit button enabled/disabled in step with the required fields.
+  nameInput.addEventListener('input', () => {
+    submitBtn.disabled = !nameInput.value.trim() || !dateInput.value;
+  });
+  dateInput.addEventListener('input', () => {
+    submitBtn.disabled = !nameInput.value.trim() || !dateInput.value;
+  });
+
+  page.appendChild(submitBtn);
+  return page;
+}
+
+// Swap out just the stats card + preview without touching the text inputs
+// above. Used by Film Review taps and +/− steppers so nothing steals focus.
+function updateEntryStats(page, es) {
+  const statsCard = page.querySelector('#stats-card');
+  if (!statsCard) return;
+  statsCard.innerHTML = '';
+  renderTabBar(statsCard, page, es);
+  renderStatsAndFilm(statsCard, es);
+
+  const preview = page.querySelector('#live-preview');
+  if (preview) preview.replaceWith(renderLivePreview(es));
+}
+
+function renderTabBar(container, page, es) {
+  const row = document.createElement('div');
+  row.className = 'tab-bar-row';
+
+  const tabs = document.createElement('div');
+  tabs.className = 'tab-bar';
+
+  // The Game Total tab is read-only - it shows aggregate totals across all sets.
+  const totalTab = document.createElement('button');
+  totalTab.className = 'tab' + (es.activeTab === 0 ? ' active' : '');
+  totalTab.textContent = 'Game Total';
+  totalTab.addEventListener('click', () => { es.activeTab = 0; updateEntryStats(page, es); });
+  tabs.appendChild(totalTab);
+
+  es.sets.forEach((_, i) => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:relative;display:flex;align-items:center';
+
+    const setTab = document.createElement('button');
+    setTab.className = 'tab' + (es.activeTab === i + 1 ? ' active' : '');
+    setTab.style.paddingRight = es.sets.length > 1 ? '24px' : '';
+    setTab.textContent = `Set ${i + 1}`;
+    setTab.addEventListener('click', () => { es.activeTab = i + 1; updateEntryStats(page, es); });
+    wrap.appendChild(setTab);
+
+    if (es.sets.length > 1) {
+      const rem = document.createElement('button');
+      rem.className = 'tab-remove';
+      rem.textContent = '×';
+      rem.title = 'Remove set';
+      rem.addEventListener('click', (e) => {
+        e.stopPropagation();
+        es.sets.splice(i, 1);
+        if (es.activeTab > es.sets.length) es.activeTab = es.sets.length;
+        updateEntryStats(page, es);
+      });
+      wrap.appendChild(rem);
+    }
+
+    tabs.appendChild(wrap);
+  });
+
+  const addSet = document.createElement('button');
+  addSet.className = 'btn-add-set';
+  addSet.textContent = '+ Set';
+  addSet.addEventListener('click', () => {
+    es.sets.push(emptySet());
+    es.activeTab = es.sets.length;
+    updateEntryStats(page, es);
+  });
+  tabs.appendChild(addSet);
+
+  row.appendChild(tabs);
+
+  // ── Entry mode toggle (Film Review / Manual)
+  const toggle = document.createElement('div');
+  toggle.className = 'entry-toggle';
+
+  [
+    { id: 'film',   label: '🎬 Film Review' },
+    { id: 'manual', label: '✎ Manual' },
+  ].forEach(({ id, label }) => {
+    const btn = document.createElement('button');
+    btn.className = 'entry-toggle-btn' + (es.entryMode === id ? ' active' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => { es.entryMode = id; updateEntryStats(page, es); });
+    toggle.appendChild(btn);
+  });
+
+  row.appendChild(toggle);
+  container.appendChild(row);
+
+  // Standard / Detail toggle - only matters in Film Review mode, since Manual
+  // already shows every stat in the grid.
+  if (es.entryMode === 'film') {
+    const detailRow = document.createElement('div');
+    detailRow.className = 'detail-toggle-row';
+
+    const detailLabel = document.createElement('span');
+    detailLabel.className = 'detail-toggle-label';
+    detailLabel.textContent = 'Stat depth';
+
+    const detailControl = document.createElement('div');
+    detailControl.className = 'segment-control';
+
+    [
+      { id: false, label: 'Standard' },
+      { id: true,  label: 'Detail'   },
+    ].forEach(({ id, label }) => {
+      const btn = document.createElement('button');
+      btn.className = 'segment-btn' + (es.detailMode === id ? ' active' : '');
+      btn.textContent = label;
+      btn.addEventListener('click', () => { es.detailMode = id; updateEntryStats(page, es); });
+      detailControl.appendChild(btn);
+    });
+
+    detailRow.appendChild(detailLabel);
+    detailRow.appendChild(detailControl);
+    container.appendChild(detailRow);
+  }
+
+}
+
+function renderStatsAndFilm(container, es) {
+  if (es.entryMode === 'film') {
+    renderFilmReview(container, es);
+  } else {
+    renderManualStats(container, es);
+  }
+}
+
+function renderManualStats(container, es) {
+  const activeSetIdx = es.activeTab === 0 ? null : es.activeTab - 1;
+  const displayStats = es.activeTab === 0 ? sumSets(es.sets) : es.sets[activeSetIdx];
+  const isReadOnly = es.activeTab === 0;
+
+  if (isReadOnly) {
+    const note = document.createElement('div');
+    note.className = 'game-total-note';
+    note.textContent = `Totals across all ${es.sets.length} set${es.sets.length > 1 ? 's' : ''}. Select a set tab to edit.`;
+    container.appendChild(note);
+  }
+
+  getStatGroups(es.mode, true).forEach(({ stats }, gi) => {
+    if (gi > 0) {
+      const sep = document.createElement('hr');
+      sep.className = 'stat-section-sep';
+      container.appendChild(sep);
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'stat-grid';
+
+    stats.forEach(({ key, label }) => {
+      if (isReadOnly) {
+        const card = document.createElement('div');
+        card.className = 'stat-card-readonly';
+        card.innerHTML = `<div class="stat-label">${label}</div><div class="stat-divider"></div><div class="stat-value-display">${displayStats[key] || 0}</div>`;
+        grid.appendChild(card);
+      } else {
+        const val = es.sets[activeSetIdx][key] || 0;
+        const card = document.createElement('div');
+        card.className = 'stat-card';
+
+        const lbl = document.createElement('div');
+        lbl.className = 'stat-label';
+        lbl.textContent = label;
+
+        const div = document.createElement('div');
+        div.className = 'stat-divider';
+
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.min = '0';
+        input.className = 'stat-input';
+        input.value = val;
+        input.addEventListener('input', e => {
+          es.sets[activeSetIdx][key] = Math.max(0, parseInt(e.target.value) || 0);
+          const preview = document.querySelector('#live-preview');
+          if (preview) preview.replaceWith(renderLivePreview(es));
+        });
+
+        const btns = document.createElement('div');
+        btns.className = 'stat-btns';
+
+        const minusBtn = document.createElement('button');
+        minusBtn.className = 'step-btn';
+        minusBtn.textContent = '−';
+        minusBtn.addEventListener('click', () => {
+          const cur = es.sets[activeSetIdx][key] || 0;
+          es.sets[activeSetIdx][key] = Math.max(0, cur - 1);
+          input.value = es.sets[activeSetIdx][key];
+          const preview = document.querySelector('#live-preview');
+          if (preview) preview.replaceWith(renderLivePreview(es));
+        });
+
+        const plusBtn = document.createElement('button');
+        plusBtn.className = 'step-btn';
+        plusBtn.textContent = '+';
+        plusBtn.addEventListener('click', () => {
+          es.sets[activeSetIdx][key] = (es.sets[activeSetIdx][key] || 0) + 1;
+          input.value = es.sets[activeSetIdx][key];
+          const preview = document.querySelector('#live-preview');
+          if (preview) preview.replaceWith(renderLivePreview(es));
+        });
+
+        btns.appendChild(minusBtn);
+        btns.appendChild(plusBtn);
+        card.appendChild(lbl);
+        card.appendChild(div);
+        card.appendChild(input);
+        card.appendChild(btns);
+        grid.appendChild(card);
+      }
+    });
+
+    container.appendChild(grid);
+  });
+}
+
+function renderFilmReview(container, es) {
+  // Game Total tab is read-only, so if it's the active tab default the taps
+  // into Set 1 rather than throwing.
+  const setIdx = es.activeTab === 0 ? 0 : es.activeTab - 1;
+
+  if (es.sets.length > 1 && es.activeTab === 0) {
+    const note = document.createElement('div');
+    note.className = 'live-set-note';
+    note.innerHTML = `Logging to <strong>Set 1</strong>. Switch to a set tab to log a different set.`;
+    container.appendChild(note);
+  }
+
+  const currentSet = es.sets[setIdx];
+
+  renderFilmLarge(container, es, setIdx, currentSet);
+
+  // Undo button + a small "Last: X" label
+  const controls = document.createElement('div');
+  controls.className = 'film-controls';
+
+  const undoBtn = document.createElement('button');
+  undoBtn.className = 'film-undo-btn';
+  undoBtn.textContent = '↩ Undo';
+  undoBtn.disabled = es.tapHistory.length === 0;
+  undoBtn.addEventListener('click', () => {
+    if (!es.tapHistory.length) return;
+    const last = es.tapHistory.pop();
+    es.sets[last.setIdx][last.key] = Math.max(0, (es.sets[last.setIdx][last.key] || 0) - 1);
+    // Redraw the stats card only - the text inputs above stay put.
+    const statsCard = container.closest('#stats-card') || document.getElementById('stats-card');
+    if (statsCard) {
+      statsCard.innerHTML = '';
+      const page = statsCard.closest('.page-narrow');
+      renderTabBar(statsCard, page, es);
+      renderStatsAndFilm(statsCard, es);
+    }
+    const preview = document.querySelector('#live-preview');
+    if (preview) preview.replaceWith(renderLivePreview(es));
+  });
+
+  const historyLabel = document.createElement('span');
+  historyLabel.style.cssText = 'font-size:0.75rem;color:var(--text-dis)';
+  historyLabel.textContent = es.tapHistory.length > 0
+    ? `Last: ${es.tapHistory[es.tapHistory.length - 1].label}`
+    : '';
+
+  controls.appendChild(undoBtn);
+  controls.appendChild(historyLabel);
+  container.appendChild(controls);
+}
+
+function formatTapLabel(key) {
+  const labels = {
+    kills: 'Kill', errors: 'Error',
+    continuedPlus: 'Continue Plus', continuedMinus: 'Continue Minus',
+    blockKills: 'Block', blockPlus: 'Block Plus', blockMinus: 'Block Minus', blockErrors: 'Block Error',
+    digPlus: 'Dig Plus', digs: 'Dig', digErrors: 'Dig Error',
+    pass4: '4-Pass', pass3: '3-Pass', pass2: '2-Pass', pass1: '1-Pass', pass0: 'Pass 0',
+  };
+  return labels[key] || key;
+}
+
+function tapStat(page, es, setIdx, key, label, animKey) {
+  es.sets[setIdx][key] = (es.sets[setIdx][key] || 0) + 1;
+  es.tapHistory.push({ setIdx, key, label: label || formatTapLabel(key) });
+
+  const statsCard = document.getElementById('stats-card');
+  if (statsCard) {
+    statsCard.innerHTML = '';
+    renderTabBar(statsCard, page, es);
+    renderStatsAndFilm(statsCard, es);
+
+    // Animate the button that was just tapped.
+    const displayKey = animKey || key;
+    const btn = statsCard.querySelector(`[data-stat-key="${displayKey}"]`);
+    if (btn) btn.classList.add('tapped');
+  }
+  const preview = document.querySelector('#live-preview');
+  if (preview) preview.replaceWith(renderLivePreview(es));
+}
+
+// 5-tier colour scale for Film Review tap-button counts. The tiers map to
+// outcome quality: full green = point scored (kill, stuff block, dig plus,
+// perfect pass), light green = play continues in our favour, grey = neutral
+// play (regular dig, mid-grade pass, the combined _continue button in standard
+// mode), yellow = continues in opponent's favour, red = point lost.
+function statColor(key) {
+  switch (key) {
+    case 'kills': case 'blockKills': case 'digPlus': case 'pass4':
+      return 'var(--success)';
+    case 'continuedPlus': case 'blockPlus': case 'pass3':
+      return 'var(--success-muted)';
+    case 'digs': case 'pass2': case '_continue':
+      return 'var(--text-sec)';
+    case 'continuedMinus': case 'blockMinus': case 'pass1':
+      return 'var(--warning)';
+    case 'errors': case 'blockErrors': case 'digErrors': case 'pass0':
+      return 'var(--danger)';
+    default:
+      return 'var(--text-sec)';
+  }
+}
+
+function renderFilmLarge(container, es, setIdx, currentSet) {
+  const page = container.closest('.page-narrow');
+
+  getStatGroups(es.mode, es.detailMode).forEach(({ label: sectionLabel, stats }) => {
+    const section = document.createElement('div');
+    section.className = 'film-large-section';
+
+    const heading = document.createElement('div');
+    heading.className = 'film-large-section-label';
+    heading.textContent = sectionLabel;
+    section.appendChild(heading);
+
+    const row = document.createElement('div');
+    row.className = 'film-large-row';
+
+    stats.forEach(({ key, label, tapKey, getCount }) => {
+      const actualKey    = tapKey || key;
+      const displayCount = getCount ? getCount(currentSet) : (currentSet[key] || 0);
+
+      const btn = document.createElement('button');
+      btn.className = 'film-tap-btn';
+      btn.dataset.statKey = key;
+
+      const count = document.createElement('div');
+      count.className = 'film-tap-count';
+      count.textContent = displayCount;
+      count.style.color = statColor(key);
+
+      const lbl = document.createElement('div');
+      lbl.textContent = label;
+
+      btn.appendChild(count);
+      btn.appendChild(lbl);
+      btn.addEventListener('click', () => tapStat(page, es, setIdx, actualKey, label, key));
+      row.appendChild(btn);
+    });
+
+    section.appendChild(row);
+    container.appendChild(section);
+  });
+}
+
+
+function renderLivePreview(es) {
+  const totals = sumSets(es.sets);
+  const { killPct, errorPct, efficiency, attempts } = calcStats(
+    totals.kills, totals.errors,
+    (totals.continuedPlus || 0) + (totals.continuedMinus || 0),
+    totals.blockKills
+  );
+  const has = attempts > 0;
+
+  const card = document.createElement('div');
+  card.className = 'preview-card';
+  card.id = 'live-preview';
+
+  [
+    { label: 'Kill %',      value: has ? (killPct * 100).toFixed(1) + '%' : '-',    color: null },
+    { label: 'Error %',     value: has ? (errorPct * 100).toFixed(1) + '%' : '-',   color: null },
+    { label: 'Efficiency',  value: has ? (efficiency * 100).toFixed(1) + '%' : '-', color: has ? effColor(efficiency) : null },
+    { label: 'Attempts',    value: has ? attempts.toString() : '-',                 color: null },
+  ].forEach(({ label, value, color }, i, arr) => {
+    const metric = document.createElement('div');
+    metric.className = 'preview-metric';
+
+    const lbl = document.createElement('div');
+    lbl.className = 'preview-label';
+    lbl.textContent = label;
+
+    const val = document.createElement('div');
+    val.className = 'preview-value';
+    val.textContent = value;
+    if (color) val.style.color = color;
+
+    metric.appendChild(lbl);
+    metric.appendChild(val);
+    card.appendChild(metric);
+
+    if (i < arr.length - 1) {
+      const divider = document.createElement('div');
+      divider.className = 'preview-divider';
+      card.appendChild(divider);
+    }
+  });
+
+  return card;
+}
+
+async function renderSession() {
+  const session = await api.getSession(state.sessionId);
+
+  const page = document.createElement('div');
+  page.className = 'page';
+
+  // ── Header card
+  const headerCard = document.createElement('div');
+  headerCard.className = 'card';
+
+  const headerTop = document.createElement('div');
+  headerTop.className = 'session-header-top';
+
+  const left = document.createElement('div');
+
+  const eventName = document.createElement('div');
+  eventName.className = 'session-event-name';
+  eventName.textContent = session.event_name;
+
+  const meta = document.createElement('div');
+  meta.className = 'session-meta';
+
+  const dateEl = document.createElement('span');
+  dateEl.className = 'session-date';
+  dateEl.textContent = fmtDate(session.event_date, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+  const badge = document.createElement('span');
+  badge.className = `mode-badge mode-${session.mode}`;
+  badge.textContent = MODE_LABELS[session.mode] || session.mode;
+
+  meta.appendChild(dateEl);
+  meta.appendChild(badge);
+
+  left.appendChild(eventName);
+  left.appendChild(meta);
+
+  // Notes section flips between read-only display and an inline textarea editor.
+  let editingNotes = false;
+  let noteDraft = session.notes || '';
+
+  const notesEl = document.createElement('div');
+
+  function renderNotes() {
+    notesEl.innerHTML = '';
+    if (!editingNotes) {
+      if (session.notes) {
+        const n = document.createElement('div');
+        n.className = 'session-notes';
+        n.textContent = session.notes;
+        notesEl.appendChild(n);
+      }
+    } else {
+      const ta = document.createElement('textarea');
+      ta.className = 'input';
+      ta.rows = 3;
+      ta.style.cssText = 'resize:vertical;margin-top:12px';
+      ta.value = noteDraft;
+      ta.addEventListener('input', e => { noteDraft = e.target.value; });
+
+      const btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:8px;margin-top:8px';
+
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'btn-primary';
+      saveBtn.style.cssText = 'font-size:0.8rem;padding:7px 14px';
+      saveBtn.textContent = 'Save';
+      saveBtn.addEventListener('click', async () => {
+        await api.updateSession(session.id, { notes: noteDraft });
+        session.notes = noteDraft;
+        editingNotes = false;
+        renderNotes();
+        updateActionsPanel();
+      });
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'btn-ghost';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', () => { editingNotes = false; renderNotes(); updateActionsPanel(); });
+
+      btnRow.appendChild(saveBtn);
+      btnRow.appendChild(cancelBtn);
+      notesEl.appendChild(ta);
+      notesEl.appendChild(btnRow);
+      setTimeout(() => ta.focus(), 0);
+    }
+  }
+
+  renderNotes();
+  left.appendChild(notesEl);
+
+  // Buttons on the right: Edit Notes, Edit Session, Delete (with a two-step confirm)
+  const actions = document.createElement('div');
+  actions.className = 'session-actions';
+
+  let confirmDelete = false;
+
+  function updateActionsPanel() {
+    actions.innerHTML = '';
+    if (!editingNotes) {
+      const editNotesBtn = document.createElement('button');
+      editNotesBtn.className = 'btn-ghost';
+      editNotesBtn.textContent = 'Edit Notes';
+      editNotesBtn.addEventListener('click', () => { editingNotes = true; renderNotes(); updateActionsPanel(); });
+      actions.appendChild(editNotesBtn);
+    }
+
+    const editSessionBtn = document.createElement('button');
+    editSessionBtn.className = 'btn-ghost';
+    editSessionBtn.textContent = 'Edit Session';
+    editSessionBtn.addEventListener('click', () => navigate('edit', { sessionId: session.id }));
+    actions.appendChild(editSessionBtn);
+
+    if (!confirmDelete) {
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'btn-danger';
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.addEventListener('click', () => { confirmDelete = true; updateActionsPanel(); });
+      actions.appendChild(deleteBtn);
+    } else {
+      const confirmLabel = document.createElement('span');
+      confirmLabel.style.cssText = 'font-size:0.8rem;color:var(--danger);align-self:center';
+      confirmLabel.textContent = 'Sure?';
+
+      const yesBtn = document.createElement('button');
+      yesBtn.className = 'btn-danger-solid';
+      yesBtn.textContent = 'Yes, delete';
+      yesBtn.addEventListener('click', async () => {
+        await api.deleteSession(session.id);
+        state.sessions = await api.getSessions(state.currentUser.id).catch(() => state.sessions);
+        navigate('history');
+      });
+
+      const noBtn = document.createElement('button');
+      noBtn.className = 'btn-ghost';
+      noBtn.textContent = 'Cancel';
+      noBtn.addEventListener('click', () => { confirmDelete = false; updateActionsPanel(); });
+
+      actions.appendChild(confirmLabel);
+      actions.appendChild(yesBtn);
+      actions.appendChild(noBtn);
+    }
+  }
+
+  updateActionsPanel();
+  headerTop.appendChild(left);
+  headerTop.appendChild(actions);
+  headerCard.appendChild(headerTop);
+  page.appendChild(headerCard);
+
+  // ── Stats table
+  page.appendChild(renderSetTable(session));
+
+  // ── Back link
+  const back = document.createElement('button');
+  back.className = 'btn-ghost';
+  back.style.alignSelf = 'flex-start';
+  back.textContent = '← Back to History';
+  back.addEventListener('click', () => navigate('history'));
+  page.appendChild(back);
+
+  return page;
+}
+
+function renderSetTable(session) {
+  const wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
+
+  const scroll = document.createElement('div');
+  scroll.style.overflowX = 'auto';
+
+  const table = document.createElement('table');
+  table.className = 'stats-table';
+
+  const mode = session.mode;
+  const hasBlocking = mode === 'offence_blocking' || mode === 'full_game';
+  const hasDefence  = mode === 'full_game';
+
+  // Two-row header: top row is the column-group label, bottom row is the stats.
+  const thead = document.createElement('thead');
+
+  const tr1 = document.createElement('tr');
+  const setTh = document.createElement('th');
+  setTh.className = 'th-set';
+  setTh.rowSpan = 2;
+  setTh.textContent = 'Set';
+  tr1.appendChild(setTh);
+
+  const hittingTh = document.createElement('th');
+  hittingTh.colSpan = 8;
+  hittingTh.textContent = 'Hitting';
+  tr1.appendChild(hittingTh);
+
+  if (hasBlocking) {
+    const blkTh = document.createElement('th');
+    blkTh.colSpan = 4;
+    blkTh.className = 'th-group-sep';
+    blkTh.textContent = 'Blocking';
+    tr1.appendChild(blkTh);
+  }
+
+  if (hasDefence) {
+    const defTh = document.createElement('th');
+    defTh.colSpan = 4;
+    defTh.className = 'th-group-sep';
+    defTh.textContent = 'Defence';
+    tr1.appendChild(defTh);
+  }
+
+  thead.appendChild(tr1);
+
+  const tr2 = document.createElement('tr');
+  ['K', 'Err', 'C+', 'C−', 'Att', 'Kill%', 'Err%', 'Eff%'].forEach(h => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    tr2.appendChild(th);
+  });
+
+  if (hasBlocking) {
+    ['Blk', 'B+', 'B−', 'BE'].forEach((h, i) => {
+      const th = document.createElement('th');
+      if (i === 0) th.className = 'th-group-sep';
+      th.textContent = h;
+      tr2.appendChild(th);
+    });
+  }
+
+  if (hasDefence) {
+    ['D+', 'Dig', 'DE', '4+3%'].forEach((h, i) => {
+      const th = document.createElement('th');
+      if (i === 0) th.className = 'th-group-sep';
+      th.textContent = h;
+      tr2.appendChild(th);
+    });
+  }
+
+  thead.appendChild(tr2);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+
+  // Build a synthetic "total" row by summing every set.
+  const totalSet = { kills: 0, errors: 0, continued_plus: 0, continued_minus: 0, block_kills: 0, block_plus: 0, block_minus: 0, block_errors: 0, dig_plus: 0, digs: 0, dig_errors: 0, pass_4: 0, pass_3: 0, pass_2: 0, pass_1: 0, pass_0: 0 };
+  (session.sets || []).forEach(s => {
+    Object.keys(totalSet).forEach(k => { totalSet[k] += s[k] || 0; });
+  });
+
+  const hasPerSet = (session.sets || []).length > 1;
+
+  if (hasPerSet) {
+    (session.sets || []).forEach((s, i) => {
+      tbody.appendChild(buildSetRow(s, `Set ${i + 1}`, false, mode, hasBlocking, hasDefence));
+    });
+  }
+
+  tbody.appendChild(buildSetRow(totalSet, 'Total', true, mode, hasBlocking, hasDefence));
+
+  if (!hasPerSet) {
+    const noteRow = document.createElement('tr');
+    const noteTd = document.createElement('td');
+    noteTd.colSpan = 20;
+    noteTd.style.cssText = 'color:var(--text-dis);font-style:italic;font-size:0.8rem';
+    noteTd.textContent = 'No per-set breakdown available';
+    noteRow.appendChild(noteTd);
+    tbody.appendChild(noteRow);
+  }
+
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  wrap.appendChild(scroll);
+  return wrap;
+}
+
+function buildSetRow(s, label, isTotal, mode, hasBlocking, hasDefence) {
+  const bk  = s.block_kills    || 0;
+  const cp  = s.continued_plus  || 0;
+  const cm  = s.continued_minus || 0;
+  const att = (s.kills || 0) + (s.errors || 0) + cp + cm;
+  const effVal   = effNum(s.kills, s.errors, att, bk);
+  const pass4pct = hasDefence ? calcPassPct(s) : null;
+
+  const tr = document.createElement('tr');
+  if (isTotal) tr.className = 'tr-total';
+
+  function td(content, cls) {
+    const el = document.createElement('td');
+    if (cls) el.className = cls;
+    el.textContent = content;
+    return el;
+  }
+
+  tr.appendChild(td(label, 'td-set-label'));
+  tr.appendChild(td(s.kills  || 0));
+  tr.appendChild(td(s.errors || 0));
+  tr.appendChild(td(cp));
+  tr.appendChild(td(cm));
+  tr.appendChild(td(att));
+  tr.appendChild(td(pctStr(s.kills,  att)));
+  tr.appendChild(td(pctStr(s.errors, att)));
+
+  const effTd = td(effStr(s.kills, s.errors, att, bk));
+  if (effVal !== null) { effTd.style.color = effColor(effVal); effTd.style.fontWeight = '700'; }
+  tr.appendChild(effTd);
+
+  if (hasBlocking) {
+    tr.appendChild(td(s.block_kills  || 0, 'td-group-sep'));
+    tr.appendChild(td(s.block_plus   || 0));
+    tr.appendChild(td(s.block_minus  || 0));
+    tr.appendChild(td(s.block_errors || 0));
+  }
+
+  if (hasDefence) {
+    tr.appendChild(td(s.dig_plus   || 0, 'td-group-sep'));
+    tr.appendChild(td(s.digs       || 0));
+    tr.appendChild(td(s.dig_errors || 0));
+    tr.appendChild(td(pass4pct !== null ? (pass4pct * 100).toFixed(1) + '%' : '-'));
+  }
+
+  return tr;
+}
+
+async function renderHistory() {
+  if (!state.currentUser) {
+    const page = document.createElement('div');
+    page.className = 'page';
+    page.appendChild(emptyStateEl('🏐', 'No user selected', 'Pick or create a user from the top right.'));
+    return page;
+  }
+
+  state.sessions = await api.getSessions(state.currentUser.id).catch(() => []);
+
+  const page = document.createElement('div');
+  page.className = 'page';
+
+  const header = document.createElement('div');
+  header.className = 'page-header';
+  const heading = document.createElement('h1');
+  heading.className = 'page-heading';
+  heading.textContent = 'History';
+  const logBtn = document.createElement('button');
+  logBtn.className = 'btn-primary';
+  logBtn.style.fontSize = '0.85rem';
+  logBtn.textContent = '+ Log Session';
+  logBtn.addEventListener('click', () => navigate('entry'));
+  header.appendChild(heading);
+  header.appendChild(logBtn);
+  page.appendChild(header);
+
+  if (!state.sessions.length) {
+    page.appendChild(emptyStateEl('📋', 'No sessions yet', 'Log your first session to get started.'));
+    return page;
+  }
+
+  // Toolbar: date filter
+  const toolbar = document.createElement('div');
+  toolbar.className = 'history-toolbar';
+
+  const dateFilter = document.createElement('input');
+  dateFilter.type = 'date';
+  dateFilter.className = 'history-filter-input';
+  dateFilter.title = 'Filter by date';
+  toolbar.appendChild(dateFilter);
+  page.appendChild(toolbar);
+
+  // Table in a card
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.padding = '0';
+  card.style.overflow = 'hidden';
+
+  let sortKey = 'event_date';
+  let sortDir = -1; // -1 = descending, default to newest-first
+
+  function rebuildTable() {
+    card.innerHTML = '';
+    const filterVal = dateFilter.value;
+
+    let rows = [...state.sessions];
+
+    if (filterVal) rows = rows.filter(s => s.event_date === filterVal);
+
+    rows.sort((a, b) => {
+      let va = a[sortKey], vb = b[sortKey];
+      if (sortKey === 'efficiency') {
+        va = sessionEff(a);
+        vb = sessionEff(b);
+      }
+      if (va < vb) return -1 * sortDir;
+      if (va > vb) return  1 * sortDir;
+      return 0;
+    });
+
+    const table = document.createElement('table');
+    table.className = 'history-table';
+
+    const thead = document.createElement('thead');
+    const tr = document.createElement('tr');
+
+    const cols = [
+      { key: 'event_name', label: 'Event' },
+      { key: 'event_date', label: 'Date' },
+      { key: null,         label: 'Mode' },
+      { key: 'efficiency', label: 'Efficiency' },
+    ];
+
+    cols.forEach(col => {
+      const th = document.createElement('th');
+      th.className = col.key === sortKey ? 'sorted' : '';
+      th.innerHTML = col.label + (col.key ? `<span class="sort-arrow">${col.key === sortKey ? (sortDir === 1 ? '↑' : '↓') : '⇅'}</span>` : '');
+      if (col.key) {
+        th.addEventListener('click', () => {
+          if (sortKey === col.key) sortDir *= -1;
+          else { sortKey = col.key; sortDir = -1; }
+          rebuildTable();
+        });
+      }
+      tr.appendChild(th);
+    });
+
+    thead.appendChild(tr);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+
+    if (!rows.length) {
+      const emptyRow = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 4;
+      td.style.cssText = 'text-align:center;color:var(--text-dis);padding:32px;font-style:italic';
+      td.textContent = 'No sessions match the current filter.';
+      emptyRow.appendChild(td);
+      tbody.appendChild(emptyRow);
+    }
+
+    rows.forEach(s => {
+      const eff = sessionEff(s);
+      const tr = document.createElement('tr');
+      tr.addEventListener('click', () => navigate('session', { sessionId: s.id }));
+
+      const nameTd = document.createElement('td');
+      nameTd.className = 'history-event';
+      nameTd.textContent = s.event_name;
+
+      const dateTd = document.createElement('td');
+      dateTd.textContent = fmtDate(s.event_date, { month: 'short', day: 'numeric', year: 'numeric' });
+
+      const modeTd = document.createElement('td');
+      const badge = document.createElement('span');
+      badge.className = `mode-badge mode-${s.mode}`;
+      badge.textContent = MODE_LABELS[s.mode] || s.mode;
+      modeTd.appendChild(badge);
+
+      const effTd = document.createElement('td');
+      effTd.className = 'history-eff';
+      effTd.style.color = eff !== null ? effColor(eff) : 'var(--text-dis)';
+      effTd.textContent = eff !== null ? (eff * 100).toFixed(1) + '%' : '-';
+
+      tr.appendChild(nameTd);
+      tr.appendChild(dateTd);
+      tr.appendChild(modeTd);
+      tr.appendChild(effTd);
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    card.appendChild(table);
+  }
+
+  dateFilter.addEventListener('input', rebuildTable);
+  rebuildTable();
+  page.appendChild(card);
+  return page;
+}
+
+function sessionEff(s) {
+  const { k, e, bk, att } = sessionTotals(s);
+  return att ? (k + bk - e) / att : null;
+}
+
+function emptyStateEl(icon, title, sub) {
+  const el = document.createElement('div');
+  el.className = 'empty-state';
+  el.innerHTML = `<div class="empty-icon">${icon}</div><div class="empty-title">${title}</div><div class="empty-sub">${sub}</div>`;
+  return el;
+}
+
+async function init() {
+  applyAccentColor();
+
+  const gateForm = document.getElementById('gate-form');
+  gateForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pw = document.getElementById('gate-input').value;
+    if (!pw) return;
+
+    // Stash the password and try a real call - if it's wrong, the API will
+    // throw UNAUTHORIZED and we'll clear it back out.
+    sessionStorage.setItem('vs_pw', pw);
+
+    try {
+      const users = await api.getUsers();
+      hidePasswordGate();
+      state.users = users;
+
+      const lastUserId = parseInt(localStorage.getItem('vs_user'));
+      state.currentUser = (lastUserId && users.find(u => u.id === lastUserId)) || users[0] || null;
+
+      if (state.currentUser) {
+        state.sessions = await api.getSessions(state.currentUser.id).catch(() => []);
+      }
+
+      await render();
+    } catch (err) {
+      if (err.message === 'UNAUTHORIZED') {
+        sessionStorage.removeItem('vs_pw');
+        document.getElementById('gate-error').hidden = false;
+        const card = document.querySelector('.gate-card');
+        card.classList.add('gate-shake');
+        card.addEventListener('animationend', () => card.classList.remove('gate-shake'), { once: true });
+      } else {
+        document.getElementById('gate-error').textContent = 'Could not connect to server.';
+        document.getElementById('gate-error').hidden = false;
+      }
+    }
+  });
+
+  // If sessionStorage still has the password from a previous tab load, try
+  // skipping the gate. Refreshes feel instant when this works.
+  const savedPw = sessionStorage.getItem('vs_pw');
+  if (savedPw) {
+    try {
+      const users = await api.getUsers();
+      hidePasswordGate();
+      state.users = users;
+      const lastUserId = parseInt(localStorage.getItem('vs_user'));
+      state.currentUser = (lastUserId && users.find(u => u.id === lastUserId)) || users[0] || null;
+      if (state.currentUser) {
+        state.sessions = await api.getSessions(state.currentUser.id).catch(() => []);
+      }
+      await render();
+    } catch {
+      // Password no longer works (e.g. rotated), drop it and let the gate show.
+      sessionStorage.removeItem('vs_pw');
+    }
+  }
+}
+
+init();

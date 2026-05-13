@@ -1,0 +1,11 @@
+name = "volleystats"
+compatibility_date = "2024-05-01"
+pages_build_output_dir = "public"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "volleystats-db"
+database_id = "8feee321-2677-413f-997f-940f4bf1dbcb"
+
+# APP_PASSWORD is set as an encrypted secret, never committed here:
+#   wrangler secret put APP_PASSWORD

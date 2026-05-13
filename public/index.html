@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VolleyStats</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Password gate: shown on first load, hidden once the API accepts the password. -->
+  <div id="gate">
+    <div class="gate-card">
+      <div class="gate-logo">VolleyStats</div>
+      <div class="gate-sub">Enter the password to continue.</div>
+      <form id="gate-form">
+        <input
+          type="password"
+          id="gate-input"
+          placeholder="Password"
+          autocomplete="current-password"
+          required
+        />
+        <div id="gate-error" class="gate-error" hidden>Wrong password.</div>
+        <button type="submit" class="btn-primary btn-full">Enter</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- App shell - hidden until the gate's done. -->
+  <div id="app" hidden>
+    <nav id="nav"></nav>
+    <main id="main"></main>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

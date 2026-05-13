@@ -1,0 +1,16 @@
+# Local secrets - APP_PASSWORD lives here for `wrangler pages dev`.
+.dev.vars
+
+# Wrangler + Cloudflare local state
+.wrangler/
+
+# Node
+node_modules/
+
+# WSL / Windows / macOS junk
+*.Zone.Identifier
+.DS_Store
+
+# Local editor / agent state
+.claude/
+.vscode/
