@@ -1380,13 +1380,19 @@ nav {
 .help-btn:hover:not(:disabled) { color: var(--accent); transform: none; opacity: 1; }
 .help-open .help-btn { color: var(--accent); }
 
+/* position:fixed, not absolute - accordions, cards and table wrappers all clip
+   with overflow:hidden, which used to cut the bottom off any bubble opened near
+   the end of a section. Fixed takes it out of every clipping context; JS places
+   it in viewport coordinates and flips it above when it won't fit below. */
 .help-pop {
   display: none;
-  position: absolute;
-  top: calc(100% + 8px);
-  left: -8px;
+  position: fixed;
+  top: 0;
+  left: 0;
   width: max-content;
-  max-width: min(300px, calc(100vw - 32px));
+  max-width: min(320px, calc(100vw - 32px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1397,9 +1403,55 @@ nav {
   letter-spacing: normal;
   white-space: normal;
   cursor: auto;
+  font-weight: 400;
 }
 
 .help-open .help-pop { display: block; }
+
+/* Formula + weights block inside the bubble. */
+.help-pop-formula {
+  display: block;
+  margin-top: 10px;
+  padding: 7px 9px;
+  background: var(--bg);
+  border-radius: 6px;
+  font-size: 0.74rem;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.help-weights {
+  display: block;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.help-weight-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 0;
+  font-size: 0.74rem;
+  color: var(--text-sec);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Events that contribute nothing are still worth listing - "0" answers the
+   question "does a 2-Pass count?" better than leaving the row out. */
+.help-weight-zero { opacity: 0.5; }
+
+.help-weight-val {
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.help-pop-den {
+  display: block;
+  margin-top: 8px;
+  font-size: 0.72rem;
+  color: var(--text-dis);
+}
 
 .help-pop-title {
   display: block;
@@ -1510,6 +1562,63 @@ nav {
 .metric-value {
   font-size: 0.95rem;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+/* ── Composition doughnut ────────────────────────────────────────────────────*
+ * Part-to-whole for a discipline's outcomes. Doughnut side by side with a
+ * legend that carries the counts and shares - putting a number on every slice
+ * would be unreadable, and the thin ones have nowhere to put one anyway.
+ */
+.comp-layout {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-top: 14px;
+}
+
+.comp-canvas-wrap {
+  position: relative;
+  width: 150px;
+  height: 150px;
+  flex-shrink: 0;
+}
+
+.comp-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+}
+
+.comp-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.78rem;
+}
+
+.comp-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* Labels stay in text ink - the swatch beside them carries the identity. */
+.comp-legend-label {
+  color: var(--text-sec);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comp-legend-val {
+  margin-left: auto;
+  color: var(--text);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
@@ -1642,6 +1751,11 @@ nav {
 
   .history-table th { padding: 10px 10px; font-size: 0.7rem; }
   .history-table td { padding: 12px 10px; font-size: 0.8rem; }
+
+  /* Doughnut over legend rather than beside it - side by side leaves the
+     legend about 120px wide, which truncates every label. */
+  .comp-layout { flex-direction: column; align-items: stretch; gap: 14px; }
+  .comp-canvas-wrap { width: 140px; height: 140px; align-self: center; }
 
   /* ── Accordions + tooltips ──────────────────────────────────────────────*/
   .accordion-head { padding: 14px 16px; }

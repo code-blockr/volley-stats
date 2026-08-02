@@ -219,66 +219,195 @@ const STAT_HELP = {
   killPct: {
     title: 'Kill %',
     body: 'Of every ball you attacked, how often it ended the rally in your favour. A kill is an attack the other team can\'t bring back. Kills ÷ total attacks.',
+    formula: 'Kills ÷ attempts',
+    weights: [
+      ['Kill', '+1'],
+      ['Error', '0'],
+      ['Continue +', '0'],
+      ['Continue −', '0'],
+    ],
+    denominator: 'Kills + errors + continues',
   },
   errorPct: {
     title: 'Error %',
     body: 'How often your attack ended the rally in their favour - hit out, into the net, or stuffed straight back down. Errors ÷ total attacks.',
+    formula: 'Errors ÷ attempts',
+    weights: [
+      ['Error', '+1'],
+      ['Kill', '0'],
+      ['Continue +', '0'],
+      ['Continue −', '0'],
+    ],
+    denominator: 'Kills + errors + continues',
   },
   efficiency: {
     title: 'Efficiency %',
     body: 'Kills minus errors, as a share of your attacks. It rewards putting balls away and punishes giving points back, so it says more than kill % on its own. Block kills count as a plus because they win the rally, but they aren\'t attacks so they stay out of the total. It goes negative if you make more errors than kills. 30%+ is strong, under 15% needs work.',
+    formula: '(Kills + block kills − errors) ÷ attempts',
+    weights: [
+      ['Kill', '+1'],
+      ['Block kill', '+1'],
+      ['Error', '−1'],
+      ['Continue +', '0'],
+      ['Continue −', '0'],
+    ],
+    denominator: 'Kills + errors + continues — block kills stay out of the bottom',
   },
   attempts: {
     title: 'Attempts',
     body: 'Every ball you attacked - the kills, the errors, and the ones that stayed in play for someone else to deal with.',
+    formula: 'A straight count',
+    weights: [
+      ['Kill', '+1'],
+      ['Error', '+1'],
+      ['Continue +', '+1'],
+      ['Continue −', '+1'],
+    ],
+    denominator: 'Not a ratio — this is the total',
   },
   blockEff: {
     title: 'Block Efficiency',
     body: 'Your blocking with the damage subtracted. Blocks that scored and blocks that slowed the ball into a diggable one, minus blocks that handed them an easy ball or gave away the point outright - divided by every block you touched. Goes negative if you\'re doing more harm than good at the net.',
+    formula: '(Block kills + plus − minus − errors) ÷ touches',
+    weights: [
+      ['Block kill', '+1'],
+      ['Block +', '+1'],
+      ['Block −', '−1'],
+      ['Block error', '−1'],
+    ],
+    denominator: 'Every block you touched',
   },
   blockKillPct: {
     title: 'Block Kill %',
     body: 'How often a block ended the rally on the spot - the ball came straight back down on their side of the net.',
+    formula: 'Block kills ÷ touches',
+    weights: [
+      ['Block kill', '+1'],
+      ['Block +', '0'],
+      ['Block −', '0'],
+      ['Block error', '0'],
+    ],
+    denominator: 'Every block you touched',
   },
   blockErrPct: {
     title: 'Block Error %',
     body: 'How often a block cost you the point directly - into the net, out of bounds, or a touch called against you.',
+    formula: 'Block errors ÷ touches',
+    weights: [
+      ['Block error', '+1'],
+      ['Block kill', '0'],
+      ['Block +', '0'],
+      ['Block −', '0'],
+    ],
+    denominator: 'Every block you touched',
   },
   blockTouches: {
     title: 'Block Touches',
     body: 'Every block you got a hand on, good or bad. Blocks you never reached aren\'t counted - this only measures what you actually touched.',
+    formula: 'A straight count',
+    weights: [
+      ['Block kill', '+1'],
+      ['Block +', '+1'],
+      ['Block −', '+1'],
+      ['Block error', '+1'],
+    ],
+    denominator: 'Not a ratio — this is the total',
   },
   digEff: {
     title: 'Dig Efficiency',
     body: 'Your defence with the damage subtracted. Clean digs and playable digs, minus the ones you shanked, over every dig you went for. A clean dig is one the setter could actually run an offence from.',
+    formula: '(Dig plus + digs − dig errors) ÷ attempts',
+    weights: [
+      ['Dig +', '+1'],
+      ['Dig', '+1'],
+      ['Dig error', '−1'],
+    ],
+    denominator: 'Every dig you went for',
   },
   digPerfectPct: {
     title: 'Perfect Dig %',
     body: 'How often your dig came up clean enough that the setter had real options - not just kept alive, but genuinely playable.',
+    formula: 'Dig plus ÷ attempts',
+    weights: [
+      ['Dig +', '+1'],
+      ['Dig', '0'],
+      ['Dig error', '0'],
+    ],
+    denominator: 'Every dig you went for',
   },
   digErrPct: {
     title: 'Dig Error %',
     body: 'How often a dig attempt didn\'t come up at all - shanked away, straight down, or missed.',
+    formula: 'Dig errors ÷ attempts',
+    weights: [
+      ['Dig error', '+1'],
+      ['Dig +', '0'],
+      ['Dig', '0'],
+    ],
+    denominator: 'Every dig you went for',
   },
   digAttempts: {
     title: 'Dig Attempts',
     body: 'Every ball you went for on defence, whether or not you came up with it.',
+    formula: 'A straight count',
+    weights: [
+      ['Dig +', '+1'],
+      ['Dig', '+1'],
+      ['Dig error', '+1'],
+    ],
+    denominator: 'Not a ratio — this is the total',
   },
   goodPassPct: {
     title: 'Good Pass %',
     body: 'The share of your passes graded a 3 or a 4 - the ones that left the setter with real options rather than scrambling. Both grades get lumped together because either one gives you a functioning offence. 50%+ is a reasonable benchmark.',
+    formula: '(4-Pass + 3-Pass) ÷ passes',
+    weights: [
+      ['4-Pass', '+1'],
+      ['3-Pass', '+1'],
+      ['2-Pass', '0'],
+      ['1-Pass', '0'],
+      ['0-Pass', '0'],
+    ],
+    denominator: 'Every serve you took',
   },
   passerRating: {
     title: 'Passer Rating',
     body: 'Your passes averaged out on the 0-4 scale: a 4 is perfect, a 0 is an ace against you. It\'s the number coaches usually quote, and unlike good pass % it gives partial credit for a 2. Around 2.3 is serviceable, 2.5 and up is good.',
+    formula: '(4×4s + 3×3s + 2×2s + 1×1s) ÷ passes',
+    weights: [
+      ['4-Pass', '×4'],
+      ['3-Pass', '×3'],
+      ['2-Pass', '×2'],
+      ['1-Pass', '×1'],
+      ['0-Pass', '×0'],
+    ],
+    denominator: 'Every serve you took',
   },
   passAces: {
     title: '0-Pass %',
     body: 'How often a serve beat you outright for an ace, or your pass was unplayable. Straight loss of the rally.',
+    formula: '0-Passes ÷ passes',
+    weights: [
+      ['0-Pass', '+1'],
+      ['4-Pass', '0'],
+      ['3-Pass', '0'],
+      ['2-Pass', '0'],
+      ['1-Pass', '0'],
+    ],
+    denominator: 'Every serve you took',
   },
   passAttempts: {
     title: 'Passes',
     body: 'Every serve you took, whatever grade it ended up being.',
+    formula: 'A straight count',
+    weights: [
+      ['4-Pass', '+1'],
+      ['3-Pass', '+1'],
+      ['2-Pass', '+1'],
+      ['1-Pass', '+1'],
+      ['0-Pass', '+1'],
+    ],
+    denominator: 'Not a ratio — this is the total',
   },
 };
 
@@ -294,6 +423,45 @@ function closeHelpPopover() {
 
 document.addEventListener('click', closeHelpPopover);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHelpPopover(); });
+
+// Place the open bubble in viewport coordinates. It's position:fixed because
+// accordions, cards and table wrappers all clip with overflow:hidden, which
+// used to lop the bottom off any tooltip opened near the end of a section.
+// Fixed escapes every clipping context; the cost is that we own the maths.
+function positionOpenPopover() {
+  if (!openHelpPopover) return;
+  const { btn, pop } = openHelpPopover;
+
+  const MARGIN = 8;
+  pop.style.left = '0px';
+  pop.style.top  = '0px';
+
+  const btnRect = btn.getBoundingClientRect();
+  const popRect = pop.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth;
+  const vh = document.documentElement.clientHeight;
+
+  let x = btnRect.left - MARGIN;                  // preferred: under the ⓘ
+  x = Math.min(x, vw - MARGIN - popRect.width);   // don't run off the right
+  x = Math.max(x, MARGIN);                        // ...or off the left
+
+  let y = btnRect.bottom + MARGIN;                // preferred: below
+  if (y + popRect.height > vh - MARGIN) {
+    const above = btnRect.top - MARGIN - popRect.height;
+    // Flip above if there's room, else pin to the bottom and let the bubble
+    // scroll inside itself (max-height covers the rest).
+    y = above >= MARGIN ? above : Math.max(MARGIN, vh - MARGIN - popRect.height);
+  }
+
+  pop.style.left = x + 'px';
+  pop.style.top  = y + 'px';
+}
+
+// Follow the ⓘ rather than dismissing. Closing on scroll sounds tidy but the
+// address bar sliding away on a phone counts as a scroll, which would snap the
+// bubble shut the instant you opened one near the bottom of the screen.
+window.addEventListener('scroll', positionOpenPopover, true);
+window.addEventListener('resize', positionOpenPopover);
 
 // An ⓘ button that opens a small popover explaining the stat. `title` on its
 // own is no good here - it never fires on a touchscreen, and this is a phone
@@ -327,6 +495,42 @@ function helpTip(key) {
   pop.appendChild(t);
   pop.appendChild(b);
 
+  // Weights table - what each event is worth in the numerator, and what the
+  // whole thing gets divided by. Spelling this out beats prose for anyone
+  // trying to reconcile a number against their own count.
+  if (help.weights) {
+    const f = document.createElement('span');
+    f.className = 'help-pop-formula';
+    f.textContent = help.formula;
+    pop.appendChild(f);
+
+    const table = document.createElement('span');
+    table.className = 'help-weights';
+
+    help.weights.forEach(([label, weight]) => {
+      const row = document.createElement('span');
+      row.className = 'help-weight-row' + (weight === '0' || weight === '×0' ? ' help-weight-zero' : '');
+
+      const l = document.createElement('span');
+      l.textContent = label;
+
+      const w = document.createElement('span');
+      w.className = 'help-weight-val';
+      w.textContent = weight;
+
+      row.appendChild(l);
+      row.appendChild(w);
+      table.appendChild(row);
+    });
+
+    pop.appendChild(table);
+
+    const den = document.createElement('span');
+    den.className = 'help-pop-den';
+    den.textContent = 'Divided by: ' + help.denominator;
+    pop.appendChild(den);
+  }
+
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
     const wasOpen = openHelpPopover && openHelpPopover.wrap === wrap;
@@ -335,23 +539,8 @@ function helpTip(key) {
 
     wrap.classList.add('help-open');
     btn.setAttribute('aria-expanded', 'true');
-    openHelpPopover = { wrap, btn };
-
-    // Clamp inside the viewport. Flipping to right-aligned isn't enough - on a
-    // phone the bubble is nearly as wide as the screen, so anchoring it to
-    // either edge of the button pushes the other end off. Work out where it
-    // should sit in viewport coordinates, clamp that, then convert back to an
-    // offset from the wrapper.
-    const MARGIN = 8;
-    pop.style.left = '0px';
-    const wrapRect = wrap.getBoundingClientRect();
-    const popW     = pop.getBoundingClientRect().width;
-    const vw       = document.documentElement.clientWidth;
-
-    let x = wrapRect.left - MARGIN;                        // preferred: under the ⓘ
-    x = Math.min(x, vw - MARGIN - popW);                   // don't run off the right
-    x = Math.max(x, MARGIN);                               // ...or off the left
-    pop.style.left = (x - wrapRect.left) + 'px';
+    openHelpPopover = { wrap, btn, pop };
+    positionOpenPopover();
   });
 
   // Taps inside the bubble shouldn't dismiss it - you might be selecting text.
@@ -559,6 +748,28 @@ function sessionPassingTotals(s) {
 
 // Same three totals summed across a list of sessions, for the dashboard's
 // all-time view. Each one folds the per-session helper above.
+// Like sessionTotals but keeps the continue +/- split, which the attack
+// breakdown doughnut needs. Same legacy-column fallbacks as everything else.
+function sessionAttackTotals(s) {
+  let k = 0, e = 0, cp = 0, cm = 0, bk = 0;
+  (s.sets || []).forEach(set => {
+    k  += set.kills           || 0;
+    e  += set.errors          || 0;
+    cp += set.continued_plus  || set.continuedPlus  || 0;
+    cm += set.continued_minus || set.continuedMinus || 0;
+    bk += set.block_kills     || set.blockKills     || 0;
+  });
+  return { k, e, cp, cm, bk, att: k + e + cp + cm };
+}
+
+function aggregateAttack(sessions) {
+  return sessions.reduce((a, s) => {
+    const t = sessionAttackTotals(s);
+    return { k: a.k + t.k, e: a.e + t.e, cp: a.cp + t.cp, cm: a.cm + t.cm,
+             bk: a.bk + t.bk, att: a.att + t.att };
+  }, { k: 0, e: 0, cp: 0, cm: 0, bk: 0, att: 0 });
+}
+
 function aggregateBlocking(sessions) {
   return sessions.reduce((a, s) => {
     const t = sessionBlockingTotals(s);
@@ -588,6 +799,138 @@ function aggregatePassing(sessions) {
 //  Block and dig efficiency mirror attack efficiency: the good stuff minus the
 //  damage, over everything you touched. They can go negative the same way.
 
+// Composition ramp for the breakdown doughnuts. These categories are ORDERED
+// (best outcome → worst), not just different from each other, so the colour job
+// is diverging - two poles either side of a neutral - rather than a set of
+// arbitrary categorical hues.
+//
+// Checked with the palette validator against the dark surface rather than by
+// eye: worst adjacent pair is ΔE 15.2 for normal vision and 13.7 under deutan,
+// both clear of the floors. The app's own --success/--danger tokens FAILED that
+// check - #34D399 next to #6EE7B7 is ΔE 7.6, which almost nobody can separate
+// as neighbouring slices - so the ramp below is re-stepped for this job.
+const COMP_RAMP = {
+  best:    '#0E9F6E',
+  good:    '#34D399',
+  neutral: '#8B90A8',
+  poor:    '#F59E0B',
+  worst:   '#DC2626',
+};
+
+// Doughnut showing what a discipline's touches were actually made of. Legal
+// use of the form: part-to-whole, read at a glance, never more than 5 segments.
+// Values live in the legend rather than on the slices - a number on every
+// segment is noise, and thin slices have nowhere to put one.
+function renderCompositionCard(title, segments) {
+  const total = segments.reduce((a, s) => a + s.value, 0);
+  if (!total) return null;
+
+  const card = document.createElement('div');
+  card.className = 'card comp-card';
+
+  const heading = document.createElement('div');
+  heading.className = 'chart-title';
+  heading.textContent = title;
+  card.appendChild(heading);
+
+  const layout = document.createElement('div');
+  layout.className = 'comp-layout';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'comp-canvas-wrap';
+  const canvas = document.createElement('canvas');
+  wrap.appendChild(canvas);
+  layout.appendChild(wrap);
+
+  // Legend is always present - identity must never be carried by colour alone.
+  const legend = document.createElement('div');
+  legend.className = 'comp-legend';
+  segments.forEach(s => {
+    const row = document.createElement('div');
+    row.className = 'comp-legend-row';
+
+    const dot = document.createElement('span');
+    dot.className = 'comp-dot';
+    dot.style.background = s.color;
+
+    const lbl = document.createElement('span');
+    lbl.className = 'comp-legend-label';
+    lbl.textContent = s.label;
+
+    const val = document.createElement('span');
+    val.className = 'comp-legend-val';
+    val.textContent = `${s.value} · ${(s.value / total * 100).toFixed(0)}%`;
+
+    row.append(dot, lbl, val);
+    legend.appendChild(row);
+  });
+  layout.appendChild(legend);
+  card.appendChild(layout);
+
+  let myChart = null;
+  deferChartBuild(() => {
+    myChart = new Chart(canvas, {
+      type: 'doughnut',
+      data: {
+        labels: segments.map(s => s.label),
+        datasets: [{
+          data: segments.map(s => s.value),
+          backgroundColor: segments.map(s => s.color),
+          // 2px of surface between segments - the spacer that keeps adjacent
+          // fills from reading as one blob.
+          borderColor: '#1A1D27',
+          borderWidth: 2,
+          hoverOffset: 4,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        cutout: '58%',
+        plugins: {
+          legend: { display: false },   // we render our own, with values
+          tooltip: {
+            backgroundColor: '#1A1D27',
+            borderColor: '#2E3350',
+            borderWidth: 1,
+            titleColor: '#F0F2FF',
+            bodyColor: '#8B90A8',
+            padding: 10,
+            displayColors: false,
+            callbacks: {
+              label: c => `${c.raw} · ${(c.raw / total * 100).toFixed(1)}%`,
+            },
+          },
+        },
+      },
+    });
+    chartInstances.push(myChart);
+  });
+
+  return card;
+}
+
+function attackMetrics(t) {
+  const eff  = t.att ? (t.k + t.bk - t.e) / t.att : null;
+  const cont = t.cp + t.cm;
+  return {
+    headline: eff === null ? '-' : (eff * 100).toFixed(1) + '%',
+    headlineColor: effColor(eff),
+    rows: [
+      { label: 'Efficiency %', value: eff === null ? '-' : (eff * 100).toFixed(1) + '%', color: effColor(eff), help: 'efficiency' },
+      { label: 'Kill %',       value: pctStr(t.k, t.att), help: 'killPct' },
+      { label: 'Error %',      value: pctStr(t.e, t.att), color: 'var(--danger)', help: 'errorPct' },
+      { label: 'Continue %',   value: pctStr(cont, t.att), help: 'attempts' },
+      { label: 'Attempts',     value: t.att ? String(t.att) : '-', help: 'attempts' },
+    ],
+    segments: [
+      { label: 'Kill',       value: t.k,  color: COMP_RAMP.best },
+      { label: 'Continue +', value: t.cp, color: COMP_RAMP.good },
+      { label: 'Continue −', value: t.cm, color: COMP_RAMP.poor },
+      { label: 'Error',      value: t.e,  color: COMP_RAMP.worst },
+    ],
+  };
+}
+
 function blockingMetrics(t) {
   const eff = t.total ? (t.bk + t.bp - t.bm - t.be) / t.total : null;
   return {
@@ -598,6 +941,12 @@ function blockingMetrics(t) {
       { label: 'Block kill %',     value: pctStr(t.bk, t.total), help: 'blockKillPct' },
       { label: 'Block error %',    value: pctStr(t.be, t.total), color: 'var(--danger)', help: 'blockErrPct' },
       { label: 'Touches',          value: t.total ? String(t.total) : '-', help: 'blockTouches' },
+    ],
+    segments: [
+      { label: 'Block kill',  value: t.bk, color: COMP_RAMP.best },
+      { label: 'Block +',     value: t.bp, color: COMP_RAMP.good },
+      { label: 'Block −',     value: t.bm, color: COMP_RAMP.poor },
+      { label: 'Block error', value: t.be, color: COMP_RAMP.worst },
     ],
   };
 }
@@ -612,6 +961,11 @@ function diggingMetrics(t) {
       { label: 'Perfect dig %',  value: pctStr(t.dp, t.total), help: 'digPerfectPct' },
       { label: 'Dig error %',    value: pctStr(t.de, t.total), color: 'var(--danger)', help: 'digErrPct' },
       { label: 'Attempts',       value: t.total ? String(t.total) : '-', help: 'digAttempts' },
+    ],
+    segments: [
+      { label: 'Dig +',     value: t.dp, color: COMP_RAMP.good },
+      { label: 'Dig',       value: t.d,  color: COMP_RAMP.neutral },
+      { label: 'Dig error', value: t.de, color: COMP_RAMP.worst },
     ],
   };
 }
@@ -629,6 +983,13 @@ function passingMetrics(t) {
       { label: 'Passer rating', value: rating === null ? '-' : rating.toFixed(2), color: ratingColor(rating), help: 'passerRating' },
       { label: '0-pass %',      value: pctStr(t.p0, t.total), color: 'var(--danger)', help: 'passAces' },
       { label: 'Passes',        value: t.total ? String(t.total) : '-', help: 'passAttempts' },
+    ],
+    segments: [
+      { label: '4-Pass', value: t.p4, color: COMP_RAMP.best },
+      { label: '3-Pass', value: t.p3, color: COMP_RAMP.good },
+      { label: '2-Pass', value: t.p2, color: COMP_RAMP.neutral },
+      { label: '1-Pass', value: t.p1, color: COMP_RAMP.poor },
+      { label: '0-Pass', value: t.p0, color: COMP_RAMP.worst },
     ],
   };
 }
@@ -1097,22 +1458,22 @@ async function renderDashboard() {
   // ── Summary cards
   page.appendChild(renderSummaryCards(state.sessions));
 
-  // ── Attack chart stays front and centre - it's the headline discipline.
-  page.appendChild(renderChartCard(chronological));
-
-  // ── Blocking / passing / digging fold away behind accordions. Each header
-  //    carries its headline number so you get the figure without opening it,
-  //    and the chart inside is only built once you do (see renderAccordion).
+  // ── All four disciplines fold away behind accordions, attack included, so
+  //    they read as one set rather than one special case plus three others.
+  //    Each header carries its headline number, so the figure is there without
+  //    opening anything, and the charts inside build lazily on first open.
+  const attack   = aggregateAttack(state.sessions);
   const blocking = aggregateBlocking(state.sessions);
   const passing  = aggregatePassing(state.sessions);
   const digging  = aggregateDefence(state.sessions);
 
   [
-    { key: 'blocking', label: 'Blocking', totals: blocking, metrics: blockingMetrics, chart: renderBlockingChartCard },
-    { key: 'passing',  label: 'Passing',  totals: passing,  metrics: passingMetrics,  chart: renderPassingChartCard },
-    { key: 'digging',  label: 'Digging',  totals: digging,  metrics: diggingMetrics,  chart: renderDefenceChartCard },
-  ].forEach(({ key, label, totals, metrics, chart }) => {
-    if (!totals.total) return;   // nothing logged for this discipline yet
+    { key: 'attack',   label: 'Attack',   total: attack.att,   totals: attack,   metrics: attackMetrics,   chart: renderChartCard,             pie: 'Attack Breakdown' },
+    { key: 'blocking', label: 'Blocking', total: blocking.total, totals: blocking, metrics: blockingMetrics, chart: renderBlockingChartCard,   pie: 'Blocking Breakdown' },
+    { key: 'passing',  label: 'Passing',  total: passing.total,  totals: passing,  metrics: passingMetrics,  chart: renderPassingChartCard,    pie: 'Passing Breakdown' },
+    { key: 'digging',  label: 'Digging',  total: digging.total,  totals: digging,  metrics: diggingMetrics,  chart: renderDefenceChartCard,    pie: 'Digging Breakdown' },
+  ].forEach(({ key, label, total, totals, metrics, chart, pie }) => {
+    if (!total) return;   // nothing logged for this discipline yet
     const m = metrics(totals);
 
     page.appendChild(renderAccordion({
@@ -1123,6 +1484,8 @@ async function renderDashboard() {
       build: () => {
         const body = document.createElement('div');
         body.appendChild(renderMetricRows(m.rows));
+        const comp = renderCompositionCard(pie, m.segments);
+        if (comp) body.appendChild(comp);
         // Trend chart needs 2+ sessions with data; returns null below that.
         const c = chart(chronological);
         if (c) body.appendChild(c);
@@ -2616,19 +2979,27 @@ async function renderSession() {
   // ── Blocking / passing / digging for this session, same accordions as the
   //    dashboard but scoped to one session and without the trend charts (a
   //    single session has nothing to trend against).
+  const sAttack = sessionAttackTotals(session);
   [
-    { key: 'sess-blocking', label: 'Blocking', totals: sessionBlockingTotals(session), metrics: blockingMetrics },
-    { key: 'sess-passing',  label: 'Passing',  totals: sessionPassingTotals(session),  metrics: passingMetrics },
-    { key: 'sess-digging',  label: 'Digging',  totals: sessionDefenceTotals(session),  metrics: diggingMetrics },
-  ].forEach(({ key, label, totals, metrics }) => {
-    if (!totals.total) return;
+    { key: 'sess-attack',   label: 'Attack',   total: sAttack.att, totals: sAttack, metrics: attackMetrics,   pie: 'Attack Breakdown' },
+    { key: 'sess-blocking', label: 'Blocking', total: sessionBlockingTotals(session).total, totals: sessionBlockingTotals(session), metrics: blockingMetrics, pie: 'Blocking Breakdown' },
+    { key: 'sess-passing',  label: 'Passing',  total: sessionPassingTotals(session).total,  totals: sessionPassingTotals(session),  metrics: passingMetrics,  pie: 'Passing Breakdown' },
+    { key: 'sess-digging',  label: 'Digging',  total: sessionDefenceTotals(session).total,  totals: sessionDefenceTotals(session),  metrics: diggingMetrics,  pie: 'Digging Breakdown' },
+  ].forEach(({ key, label, total, totals, metrics, pie }) => {
+    if (!total) return;
     const m = metrics(totals);
     page.appendChild(renderAccordion({
       key,
       label,
       summary: m.headline,
       summaryColor: m.headlineColor,
-      build: () => renderMetricRows(m.rows),
+      build: () => {
+        const body = document.createElement('div');
+        body.appendChild(renderMetricRows(m.rows));
+        const comp = renderCompositionCard(pie, m.segments);
+        if (comp) body.appendChild(comp);
+        return body;
+      },
     }));
   });
 
