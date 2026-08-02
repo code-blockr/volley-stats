@@ -186,6 +186,182 @@ function effNum(kills, errors, total, blockKills = 0) {
   return (kills + blockKills - errors) / total;
 }
 
+// Good pass % - 50%+ is the benchmark, same scale the README describes.
+function passPctColor(p) {
+  if (p === null || p === undefined || isNaN(p)) return 'var(--text-sec)';
+  if (p >= 0.50) return 'var(--success)';
+  if (p >= 0.35) return 'var(--warning)';
+  return 'var(--danger)';
+}
+
+// Passer rating sits on a 0-4 scale, so it needs its own thresholds rather
+// than the 0-1 ones effColor uses.
+function ratingColor(r) {
+  if (r === null || r === undefined || isNaN(r)) return 'var(--text-sec)';
+  if (r >= 2.5) return 'var(--success)';
+  if (r >= 2.2) return 'var(--warning)';
+  return 'var(--danger)';
+}
+
+//  ██╗  ██╗███████╗██╗     ██████╗
+//  ██║  ██║██╔════╝██║     ██╔══██╗
+//  ███████║█████╗  ██║     ██████╔╝
+//  ██╔══██║██╔══╝  ██║     ██╔═══╝
+//  ██║  ██║███████╗███████╗██║
+//  ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝
+//
+// Plain-English explanations for every derived number, keyed so the same text
+// can hang off a dashboard card, an accordion row, or anywhere else it shows
+// up. Written for someone who doesn't already know volleyball stats - no
+// jargon that isn't immediately unpacked.
+
+const STAT_HELP = {
+  killPct: {
+    title: 'Kill %',
+    body: 'Of every ball you attacked, how often it ended the rally in your favour. A kill is an attack the other team can\'t bring back. Kills ÷ total attacks.',
+  },
+  errorPct: {
+    title: 'Error %',
+    body: 'How often your attack ended the rally in their favour - hit out, into the net, or stuffed straight back down. Errors ÷ total attacks.',
+  },
+  efficiency: {
+    title: 'Efficiency %',
+    body: 'Kills minus errors, as a share of your attacks. It rewards putting balls away and punishes giving points back, so it says more than kill % on its own. Block kills count as a plus because they win the rally, but they aren\'t attacks so they stay out of the total. It goes negative if you make more errors than kills. 30%+ is strong, under 15% needs work.',
+  },
+  attempts: {
+    title: 'Attempts',
+    body: 'Every ball you attacked - the kills, the errors, and the ones that stayed in play for someone else to deal with.',
+  },
+  blockEff: {
+    title: 'Block Efficiency',
+    body: 'Your blocking with the damage subtracted. Blocks that scored and blocks that slowed the ball into a diggable one, minus blocks that handed them an easy ball or gave away the point outright - divided by every block you touched. Goes negative if you\'re doing more harm than good at the net.',
+  },
+  blockKillPct: {
+    title: 'Block Kill %',
+    body: 'How often a block ended the rally on the spot - the ball came straight back down on their side of the net.',
+  },
+  blockErrPct: {
+    title: 'Block Error %',
+    body: 'How often a block cost you the point directly - into the net, out of bounds, or a touch called against you.',
+  },
+  blockTouches: {
+    title: 'Block Touches',
+    body: 'Every block you got a hand on, good or bad. Blocks you never reached aren\'t counted - this only measures what you actually touched.',
+  },
+  digEff: {
+    title: 'Dig Efficiency',
+    body: 'Your defence with the damage subtracted. Clean digs and playable digs, minus the ones you shanked, over every dig you went for. A clean dig is one the setter could actually run an offence from.',
+  },
+  digPerfectPct: {
+    title: 'Perfect Dig %',
+    body: 'How often your dig came up clean enough that the setter had real options - not just kept alive, but genuinely playable.',
+  },
+  digErrPct: {
+    title: 'Dig Error %',
+    body: 'How often a dig attempt didn\'t come up at all - shanked away, straight down, or missed.',
+  },
+  digAttempts: {
+    title: 'Dig Attempts',
+    body: 'Every ball you went for on defence, whether or not you came up with it.',
+  },
+  goodPassPct: {
+    title: 'Good Pass %',
+    body: 'The share of your passes graded a 3 or a 4 - the ones that left the setter with real options rather than scrambling. Both grades get lumped together because either one gives you a functioning offence. 50%+ is a reasonable benchmark.',
+  },
+  passerRating: {
+    title: 'Passer Rating',
+    body: 'Your passes averaged out on the 0-4 scale: a 4 is perfect, a 0 is an ace against you. It\'s the number coaches usually quote, and unlike good pass % it gives partial credit for a 2. Around 2.3 is serviceable, 2.5 and up is good.',
+  },
+  passAces: {
+    title: '0-Pass %',
+    body: 'How often a serve beat you outright for an ace, or your pass was unplayable. Straight loss of the rally.',
+  },
+  passAttempts: {
+    title: 'Passes',
+    body: 'Every serve you took, whatever grade it ended up being.',
+  },
+};
+
+// Tracks the popover that's currently open so a second tap anywhere closes it.
+let openHelpPopover = null;
+
+function closeHelpPopover() {
+  if (!openHelpPopover) return;
+  openHelpPopover.wrap.classList.remove('help-open');
+  openHelpPopover.btn.setAttribute('aria-expanded', 'false');
+  openHelpPopover = null;
+}
+
+document.addEventListener('click', closeHelpPopover);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHelpPopover(); });
+
+// An ⓘ button that opens a small popover explaining the stat. `title` on its
+// own is no good here - it never fires on a touchscreen, and this is a phone
+// app first.
+function helpTip(key) {
+  const help = STAT_HELP[key];
+  if (!help) return document.createTextNode('');
+
+  const wrap = document.createElement('span');
+  wrap.className = 'help-wrap';
+
+  const btn = document.createElement('button');
+  btn.className = 'help-btn';
+  btn.type = 'button';
+  btn.textContent = 'ⓘ';
+  btn.setAttribute('aria-label', `What is ${help.title}?`);
+  btn.setAttribute('aria-expanded', 'false');
+
+  const pop = document.createElement('span');
+  pop.className = 'help-pop';
+  pop.setAttribute('role', 'tooltip');
+
+  const t = document.createElement('span');
+  t.className = 'help-pop-title';
+  t.textContent = help.title;
+
+  const b = document.createElement('span');
+  b.className = 'help-pop-body';
+  b.textContent = help.body;
+
+  pop.appendChild(t);
+  pop.appendChild(b);
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const wasOpen = openHelpPopover && openHelpPopover.wrap === wrap;
+    closeHelpPopover();
+    if (wasOpen) return;
+
+    wrap.classList.add('help-open');
+    btn.setAttribute('aria-expanded', 'true');
+    openHelpPopover = { wrap, btn };
+
+    // Clamp inside the viewport. Flipping to right-aligned isn't enough - on a
+    // phone the bubble is nearly as wide as the screen, so anchoring it to
+    // either edge of the button pushes the other end off. Work out where it
+    // should sit in viewport coordinates, clamp that, then convert back to an
+    // offset from the wrapper.
+    const MARGIN = 8;
+    pop.style.left = '0px';
+    const wrapRect = wrap.getBoundingClientRect();
+    const popW     = pop.getBoundingClientRect().width;
+    const vw       = document.documentElement.clientWidth;
+
+    let x = wrapRect.left - MARGIN;                        // preferred: under the ⓘ
+    x = Math.min(x, vw - MARGIN - popW);                   // don't run off the right
+    x = Math.max(x, MARGIN);                               // ...or off the left
+    pop.style.left = (x - wrapRect.left) + 'px';
+  });
+
+  // Taps inside the bubble shouldn't dismiss it - you might be selecting text.
+  pop.addEventListener('click', e => e.stopPropagation());
+
+  wrap.appendChild(btn);
+  wrap.appendChild(pop);
+  return wrap;
+}
+
 function fmtDate(dateStr, opts = {}) {
   // Dates come back as plain YYYY-MM-DD. Parse at noon UTC so a -5 or +12
   // timezone doesn't shift the day backward when we render.
@@ -207,6 +383,8 @@ const SETTINGS_DEFAULTS = {
   // it instead of resetting to Film + Standard every single time.
   entryMode:   'film',
   detailMode:  false,
+  // Which of the blocking/passing/digging accordions you left open.
+  openSections: {},
 };
 
 // Preset accent swatches. There's still a colour picker for anyone who wants
@@ -377,6 +555,164 @@ function sessionPassingTotals(s) {
     p0 += set.pass_0 || set.pass0 || 0;
   });
   return { p4, p3, p2, p1, p0, total: p4 + p3 + p2 + p1 + p0 };
+}
+
+// Same three totals summed across a list of sessions, for the dashboard's
+// all-time view. Each one folds the per-session helper above.
+function aggregateBlocking(sessions) {
+  return sessions.reduce((a, s) => {
+    const t = sessionBlockingTotals(s);
+    return { bk: a.bk + t.bk, bp: a.bp + t.bp, bm: a.bm + t.bm, be: a.be + t.be, total: a.total + t.total };
+  }, { bk: 0, bp: 0, bm: 0, be: 0, total: 0 });
+}
+
+function aggregateDefence(sessions) {
+  return sessions.reduce((a, s) => {
+    const t = sessionDefenceTotals(s);
+    return { dp: a.dp + t.dp, d: a.d + t.d, de: a.de + t.de, total: a.total + t.total };
+  }, { dp: 0, d: 0, de: 0, total: 0 });
+}
+
+function aggregatePassing(sessions) {
+  return sessions.reduce((a, s) => {
+    const t = sessionPassingTotals(s);
+    return { p4: a.p4 + t.p4, p3: a.p3 + t.p3, p2: a.p2 + t.p2, p1: a.p1 + t.p1, p0: a.p0 + t.p0, total: a.total + t.total };
+  }, { p4: 0, p3: 0, p2: 0, p1: 0, p0: 0, total: 0 });
+}
+
+//  ── Derived metrics for the three secondary disciplines ──────────────────────
+//  Each returns { headline, headlineColor, rows[] } so the accordion header can
+//  show one number and the body can list the breakdown. Shapes match on purpose
+//  so one renderer handles all three.
+//
+//  Block and dig efficiency mirror attack efficiency: the good stuff minus the
+//  damage, over everything you touched. They can go negative the same way.
+
+function blockingMetrics(t) {
+  const eff = t.total ? (t.bk + t.bp - t.bm - t.be) / t.total : null;
+  return {
+    headline: eff === null ? '-' : (eff * 100).toFixed(1) + '%',
+    headlineColor: effColor(eff),
+    rows: [
+      { label: 'Block efficiency', value: eff === null ? '-' : (eff * 100).toFixed(1) + '%', color: effColor(eff), help: 'blockEff' },
+      { label: 'Block kill %',     value: pctStr(t.bk, t.total), help: 'blockKillPct' },
+      { label: 'Block error %',    value: pctStr(t.be, t.total), color: 'var(--danger)', help: 'blockErrPct' },
+      { label: 'Touches',          value: t.total ? String(t.total) : '-', help: 'blockTouches' },
+    ],
+  };
+}
+
+function diggingMetrics(t) {
+  const eff = t.total ? (t.dp + t.d - t.de) / t.total : null;
+  return {
+    headline: eff === null ? '-' : (eff * 100).toFixed(1) + '%',
+    headlineColor: effColor(eff),
+    rows: [
+      { label: 'Dig efficiency', value: eff === null ? '-' : (eff * 100).toFixed(1) + '%', color: effColor(eff), help: 'digEff' },
+      { label: 'Perfect dig %',  value: pctStr(t.dp, t.total), help: 'digPerfectPct' },
+      { label: 'Dig error %',    value: pctStr(t.de, t.total), color: 'var(--danger)', help: 'digErrPct' },
+      { label: 'Attempts',       value: t.total ? String(t.total) : '-', help: 'digAttempts' },
+    ],
+  };
+}
+
+function passingMetrics(t) {
+  const good   = t.total ? (t.p4 + t.p3) / t.total : null;
+  // Standard 0-4 serve-receive rating. 0-passes contribute nothing but still
+  // count in the denominator, which is what drags the average down.
+  const rating = t.total ? (4 * t.p4 + 3 * t.p3 + 2 * t.p2 + 1 * t.p1) / t.total : null;
+  return {
+    headline: rating === null ? '-' : rating.toFixed(2),
+    headlineColor: ratingColor(rating),
+    rows: [
+      { label: 'Good pass %',   value: good === null ? '-' : (good * 100).toFixed(1) + '%', color: passPctColor(good), help: 'goodPassPct' },
+      { label: 'Passer rating', value: rating === null ? '-' : rating.toFixed(2), color: ratingColor(rating), help: 'passerRating' },
+      { label: '0-pass %',      value: pctStr(t.p0, t.total), color: 'var(--danger)', help: 'passAces' },
+      { label: 'Passes',        value: t.total ? String(t.total) : '-', help: 'passAttempts' },
+    ],
+  };
+}
+
+// Renders the { rows } from the metric builders above as a labelled list, each
+// with its own ⓘ explainer.
+function renderMetricRows(rows) {
+  const list = document.createElement('div');
+  list.className = 'metric-list';
+
+  rows.forEach(({ label, value, color, help }) => {
+    const row = document.createElement('div');
+    row.className = 'metric-row';
+
+    const lbl = document.createElement('span');
+    lbl.className = 'metric-label';
+    lbl.textContent = label;
+    if (help) lbl.appendChild(helpTip(help));
+
+    const val = document.createElement('span');
+    val.className = 'metric-value';
+    val.textContent = value;
+    if (color) val.style.color = color;
+
+    row.appendChild(lbl);
+    row.appendChild(val);
+    list.appendChild(row);
+  });
+
+  return list;
+}
+
+// Collapsible section. The body is built lazily on first open - the dashboard
+// puts charts in here, and Chart.js sizes itself to a hidden canvas as 0x0 if
+// you build it while the section is still collapsed.
+function renderAccordion({ key, label, summary, summaryColor, build }) {
+  const wrap = document.createElement('div');
+  wrap.className = 'accordion';
+
+  const head = document.createElement('button');
+  head.className = 'accordion-head';
+  head.type = 'button';
+
+  const caret = document.createElement('span');
+  caret.className = 'accordion-caret';
+  caret.textContent = '▸';
+
+  const lbl = document.createElement('span');
+  lbl.className = 'accordion-label';
+  lbl.textContent = label;
+
+  const sum = document.createElement('span');
+  sum.className = 'accordion-summary';
+  sum.textContent = summary;
+  if (summaryColor) sum.style.color = summaryColor;
+
+  head.appendChild(caret);
+  head.appendChild(lbl);
+  head.appendChild(sum);
+
+  const body = document.createElement('div');
+  body.className = 'accordion-body';
+
+  let built = false;
+  const openSections = settings.openSections || {};
+  let open = !!openSections[key];
+
+  function apply() {
+    if (open && !built) { body.appendChild(build()); built = true; }
+    wrap.classList.toggle('accordion-open', open);
+    head.setAttribute('aria-expanded', String(open));
+  }
+
+  head.addEventListener('click', () => {
+    open = !open;
+    apply();
+    // Remember it per device - if you always want blocking visible, it stays.
+    saveSetting('openSections', { ...(settings.openSections || {}), [key]: open });
+  });
+
+  apply();
+  wrap.appendChild(head);
+  wrap.appendChild(body);
+  return wrap;
 }
 
 async function navigate(page, opts = {}) {
@@ -761,19 +1097,39 @@ async function renderDashboard() {
   // ── Summary cards
   page.appendChild(renderSummaryCards(state.sessions));
 
-  // ── Charts (2-per-row on desktop, 1-per-row on tablet/mobile)
-  const chartsGrid = document.createElement('div');
-  chartsGrid.className = 'charts-grid';
+  // ── Attack chart stays front and centre - it's the headline discipline.
+  page.appendChild(renderChartCard(chronological));
 
-  chartsGrid.appendChild(renderChartCard(chronological));
-  const blkCard  = renderBlockingChartCard(chronological);
-  if (blkCard)  chartsGrid.appendChild(blkCard);
-  const defCard  = renderDefenceChartCard(chronological);
-  if (defCard)  chartsGrid.appendChild(defCard);
-  const passCard = renderPassingChartCard(chronological);
-  if (passCard) chartsGrid.appendChild(passCard);
+  // ── Blocking / passing / digging fold away behind accordions. Each header
+  //    carries its headline number so you get the figure without opening it,
+  //    and the chart inside is only built once you do (see renderAccordion).
+  const blocking = aggregateBlocking(state.sessions);
+  const passing  = aggregatePassing(state.sessions);
+  const digging  = aggregateDefence(state.sessions);
 
-  page.appendChild(chartsGrid);
+  [
+    { key: 'blocking', label: 'Blocking', totals: blocking, metrics: blockingMetrics, chart: renderBlockingChartCard },
+    { key: 'passing',  label: 'Passing',  totals: passing,  metrics: passingMetrics,  chart: renderPassingChartCard },
+    { key: 'digging',  label: 'Digging',  totals: digging,  metrics: diggingMetrics,  chart: renderDefenceChartCard },
+  ].forEach(({ key, label, totals, metrics, chart }) => {
+    if (!totals.total) return;   // nothing logged for this discipline yet
+    const m = metrics(totals);
+
+    page.appendChild(renderAccordion({
+      key,
+      label,
+      summary: m.headline,
+      summaryColor: m.headlineColor,
+      build: () => {
+        const body = document.createElement('div');
+        body.appendChild(renderMetricRows(m.rows));
+        // Trend chart needs 2+ sessions with data; returns null below that.
+        const c = chart(chronological);
+        if (c) body.appendChild(c);
+        return body;
+      },
+    }));
+  });
 
   // ── Recent sessions
   if (state.sessions.length > 0) {
@@ -798,19 +1154,20 @@ function renderSummaryCards(sessions) {
   const eff = has ? (totals.k + totals.bk - totals.e) / att : 0;
 
   const cards = [
-    { label: 'Kill %',       value: has ? (totals.k / att * 100).toFixed(1) + '%' : '-', sub: 'all time', color: null },
-    { label: 'Error %',      value: has ? (totals.e / att * 100).toFixed(1) + '%' : '-', sub: 'all time', color: null },
-    { label: 'Efficiency %', value: has ? (eff * 100).toFixed(1) + '%' : '-',           sub: 'all time', color: has ? effColor(eff) : null },
-    { label: 'Attempts',     value: has ? att.toLocaleString() : '-',                   sub: `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`, color: null },
+    { label: 'Kill %',       value: has ? (totals.k / att * 100).toFixed(1) + '%' : '-', sub: 'all time', color: null, help: 'killPct' },
+    { label: 'Error %',      value: has ? (totals.e / att * 100).toFixed(1) + '%' : '-', sub: 'all time', color: null, help: 'errorPct' },
+    { label: 'Efficiency %', value: has ? (eff * 100).toFixed(1) + '%' : '-',           sub: 'all time', color: has ? effColor(eff) : null, help: 'efficiency' },
+    { label: 'Attempts',     value: has ? att.toLocaleString() : '-',                   sub: `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`, color: null, help: 'attempts' },
   ];
 
-  cards.forEach(({ label, value, sub, color }) => {
+  cards.forEach(({ label, value, sub, color, help }) => {
     const card = document.createElement('div');
     card.className = 'card';
 
     const lbl = document.createElement('div');
     lbl.className = 'summary-card-label';
     lbl.textContent = label;
+    if (help) lbl.appendChild(helpTip(help));
 
     const val = document.createElement('div');
     val.className = 'summary-card-value';
@@ -1044,7 +1401,7 @@ function renderChartCard(sessions) {
     chartInstances.push(myChart);
   }
 
-  requestAnimationFrame(rebuildChart);
+  deferChartBuild(rebuildChart);
   return card;
 }
 
@@ -1092,6 +1449,20 @@ function makeExternalTooltip(chartData, getRows) {
 }
 
 // Shared chart scaffold - card + header (with controls slot) + canvas.
+// Charts can't be built the moment their card is created - the canvas isn't in
+// the document yet, so Chart.js would size it against nothing. rAF is the right
+// wait in the normal case (it fires after the page is attached and laid out),
+// but it only fires while frames are being produced: not in a background tab,
+// and not in a headless run once virtual time has moved on. Since accordions
+// build their chart on open, that gap is reachable. Whichever timer arrives
+// first wins, and the flag keeps it to one build.
+function deferChartBuild(fn) {
+  let done = false;
+  const run = () => { if (done) return; done = true; fn(); };
+  requestAnimationFrame(run);
+  setTimeout(run, 50);
+}
+
 function makeChartShell(title) {
   const card = document.createElement('div');
   card.className = 'card';
@@ -1219,7 +1590,7 @@ function renderBlockingChartCard(sessions) {
     chartInstances.push(myChart);
   }
 
-  requestAnimationFrame(rebuildChart);
+  deferChartBuild(rebuildChart);
   return card;
 }
 
@@ -1326,7 +1697,7 @@ function renderDefenceChartCard(sessions) {
     chartInstances.push(myChart);
   }
 
-  requestAnimationFrame(rebuildChart);
+  deferChartBuild(rebuildChart);
   return card;
 }
 
@@ -1434,7 +1805,7 @@ function renderPassingChartCard(sessions) {
     chartInstances.push(myChart);
   }
 
-  requestAnimationFrame(rebuildChart);
+  deferChartBuild(rebuildChart);
   return card;
 }
 
@@ -2241,6 +2612,25 @@ async function renderSession() {
 
   // ── Stats table
   page.appendChild(renderSetTable(session));
+
+  // ── Blocking / passing / digging for this session, same accordions as the
+  //    dashboard but scoped to one session and without the trend charts (a
+  //    single session has nothing to trend against).
+  [
+    { key: 'sess-blocking', label: 'Blocking', totals: sessionBlockingTotals(session), metrics: blockingMetrics },
+    { key: 'sess-passing',  label: 'Passing',  totals: sessionPassingTotals(session),  metrics: passingMetrics },
+    { key: 'sess-digging',  label: 'Digging',  totals: sessionDefenceTotals(session),  metrics: diggingMetrics },
+  ].forEach(({ key, label, totals, metrics }) => {
+    if (!totals.total) return;
+    const m = metrics(totals);
+    page.appendChild(renderAccordion({
+      key,
+      label,
+      summary: m.headline,
+      summaryColor: m.headlineColor,
+      build: () => renderMetricRows(m.rows),
+    }));
+  });
 
   // ── Back link
   const back = document.createElement('button');
