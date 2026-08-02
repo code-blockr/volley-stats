@@ -163,11 +163,40 @@ function calcPassPct(s) {
   return ((s.pass_4||0) + (s.pass_3||0)) / total;
 }
 
-// CSS colour token for an efficiency value - green ≥30%, yellow ≥15%, red below.
+// CSS colour token for ATTACK efficiency - green ≥30%, yellow ≥15%, red below.
+// These are hitting-percentage benchmarks: .300 is strong, .150 is the floor of
+// functional. Only use this for attack. See touchEffColor for the others.
 function effColor(eff) {
   if (eff === null || eff === undefined || isNaN(eff)) return 'var(--text-sec)';
   if (eff >= 0.300) return 'var(--success)';
   if (eff >= 0.150) return 'var(--warning)';
+  return 'var(--danger)';
+}
+
+// Block and dig efficiency need their own scale. They used to share effColor,
+// which quietly measured them against a hitting-percentage benchmark they have
+// no relationship to - almost any competent blocking cleared 30%, so the colour
+// was close to decorative.
+//
+// Both grade every touch as either positive or negative, so positives +
+// negatives = touches, and the formula collapses to exactly:
+//
+//     efficiency = 1 − 2 × (negative-touch rate)
+//
+// That gives a benchmark worth having, because the bands can be set on the
+// error rate and then read straight off:
+//
+//     ≤20% of touches negative  →  ≥60% efficiency  →  green
+//     ≤30% of touches negative  →  ≥40% efficiency  →  amber
+//     >30% of touches negative  →  <40% efficiency  →  red
+//
+// Attack has no such identity - continued balls are attempts that score nothing
+// and block kills score without being attempts - which is exactly why it can't
+// share a scale with these two.
+function touchEffColor(eff) {
+  if (eff === null || eff === undefined || isNaN(eff)) return 'var(--text-sec)';
+  if (eff >= 0.600) return 'var(--success)';
+  if (eff >= 0.400) return 'var(--warning)';
   return 'var(--danger)';
 }
 
@@ -277,7 +306,7 @@ const STAT_HELP = {
   },
   blockEff: {
     title: 'Block Efficiency',
-    body: 'Your blocking with the damage subtracted. Blocks that scored and blocks that slowed the ball into a diggable one, minus blocks that handed them an easy ball or gave away the point outright - divided by every block you touched. Goes negative if you\'re doing more harm than good at the net.',
+    body: 'Your blocking with the damage subtracted. Blocks that scored and blocks that slowed the ball into a diggable one, minus blocks that handed them an easy ball or gave away the point outright - divided by every block you touched. Goes negative if you\'re doing more harm than good at the net. Every touch counts either for or against, so this is just your bad-touch rate doubled and flipped: 60%+ means one touch in five hurt you, under 40% means more than three in ten did.',
     formula: '(Block kills + plus − minus − errors) ÷ touches',
     weights: [
       ['Block kill', '+1'],
@@ -325,7 +354,7 @@ const STAT_HELP = {
   },
   digEff: {
     title: 'Dig Efficiency',
-    body: 'Your defence with the damage subtracted. Clean digs and playable digs, minus the ones you shanked, over every dig you went for. A clean dig is one the setter could actually run an offence from.',
+    body: 'Your defence with the damage subtracted. Clean digs and playable digs, minus the ones you shanked, over every dig you went for. A clean dig is one the setter could actually run an offence from. Since every attempt counts either for or against, this is your shank rate doubled and flipped: 60%+ means you shanked one in five, under 40% means more than three in ten.',
     formula: '(Dig plus + digs − dig errors) ÷ attempts',
     weights: [
       ['Dig +', '+1'],
@@ -945,9 +974,9 @@ function blockingMetrics(t) {
   const eff = t.total ? (t.bk + t.bp - t.bm - t.be) / t.total : null;
   return {
     headline: eff === null ? '-' : (eff * 100).toFixed(1) + '%',
-    headlineColor: effColor(eff),
+    headlineColor: touchEffColor(eff),
     rows: [
-      { label: 'Block efficiency', value: eff === null ? '-' : (eff * 100).toFixed(1) + '%', color: effColor(eff), help: 'blockEff' },
+      { label: 'Block efficiency', value: eff === null ? '-' : (eff * 100).toFixed(1) + '%', color: touchEffColor(eff), help: 'blockEff' },
       { label: 'Block kill %',     value: pctStr(t.bk, t.total), help: 'blockKillPct' },
       { label: 'Block error %',    value: pctStr(t.be, t.total), color: 'var(--danger)', help: 'blockErrPct' },
       { label: 'Touches',          value: t.total ? String(t.total) : '-', help: 'blockTouches' },
@@ -965,9 +994,9 @@ function diggingMetrics(t) {
   const eff = t.total ? (t.dp + t.d - t.de) / t.total : null;
   return {
     headline: eff === null ? '-' : (eff * 100).toFixed(1) + '%',
-    headlineColor: effColor(eff),
+    headlineColor: touchEffColor(eff),
     rows: [
-      { label: 'Dig efficiency', value: eff === null ? '-' : (eff * 100).toFixed(1) + '%', color: effColor(eff), help: 'digEff' },
+      { label: 'Dig efficiency', value: eff === null ? '-' : (eff * 100).toFixed(1) + '%', color: touchEffColor(eff), help: 'digEff' },
       { label: 'Perfect dig %',  value: pctStr(t.dp, t.total), help: 'digPerfectPct' },
       { label: 'Dig error %',    value: pctStr(t.de, t.total), color: 'var(--danger)', help: 'digErrPct' },
       { label: 'Attempts',       value: t.total ? String(t.total) : '-', help: 'digAttempts' },
