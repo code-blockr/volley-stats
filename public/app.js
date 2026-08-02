@@ -459,6 +459,17 @@ function renderNav() {
   const inner = document.createElement('div');
   inner.className = 'nav-inner';
 
+  // Hamburger. Hidden on desktop by CSS - below 560px the links collapse into
+  // a dropdown panel and this is what opens it.
+  const menuBtn = document.createElement('button');
+  menuBtn.className = 'nav-menu-btn';
+  menuBtn.setAttribute('aria-label', 'Menu');
+  menuBtn.setAttribute('aria-expanded', 'false');
+  menuBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+  </svg>`;
+  inner.appendChild(menuBtn);
+
   // Logo
   const logo = document.createElement('button');
   logo.className = 'nav-logo';
@@ -478,11 +489,31 @@ function renderNav() {
     const btn = document.createElement('button');
     btn.className = 'nav-link' + (state.page === page ? ' active' : '');
     btn.textContent = label;
+    // navigate() redraws the nav from scratch, so the panel closes itself.
     btn.addEventListener('click', () => navigate(page));
     links.appendChild(btn);
   });
 
   inner.appendChild(links);
+
+  let menuOpen = false;
+
+  function setMenu(open) {
+    menuOpen = open;
+    links.classList.toggle('nav-links-open', open);
+    menuBtn.classList.toggle('active', open);
+    menuBtn.setAttribute('aria-expanded', String(open));
+  }
+
+  menuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setMenu(!menuOpen);
+    // Only listen while it's actually open, and once - otherwise every nav
+    // redraw would stack another permanent listener on document.
+    if (menuOpen) {
+      document.addEventListener('click', () => setMenu(false), { once: true });
+    }
+  });
 
   // Right side: settings gear + user pill
   const actions = document.createElement('div');
@@ -2227,7 +2258,7 @@ function renderSetTable(session) {
   wrap.className = 'table-wrap';
 
   const scroll = document.createElement('div');
-  scroll.style.overflowX = 'auto';
+  scroll.className = 'table-scroll';
 
   const table = document.createElement('table');
   table.className = 'stats-table';
@@ -2423,10 +2454,11 @@ async function renderHistory() {
   page.appendChild(toolbar);
 
   // Table in a card
+  // table-card handles the padding and the sideways scroll. Inline
+  // overflow:hidden here used to clip the Efficiency column off the right
+  // edge on a narrow phone with no way to scroll to it.
   const card = document.createElement('div');
-  card.className = 'card';
-  card.style.padding = '0';
-  card.style.overflow = 'hidden';
+  card.className = 'card table-card';
 
   let sortKey = 'event_date';
   let sortDir = -1; // -1 = descending, default to newest-first

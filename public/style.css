@@ -25,16 +25,28 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 
+/* Stop iOS inflating text when you rotate to landscape - we set our own sizes. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
 body {
   font-family: 'Inter', sans-serif;
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
+  min-height: 100dvh;   /* dvh accounts for the mobile URL bar; vh is the fallback */
 }
 
 button, input, textarea, select { font-family: inherit; }
-button { cursor: pointer; transition: opacity 0.15s, transform 0.1s; }
+button {
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+  /* touch-action kills the ~300ms double-tap-zoom wait, which you feel
+     immediately when tapping out a rally in Film Review. The grey flash and
+     text selection are also pure noise when you're tapping fast. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
 button:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
 button:active:not(:disabled) { transform: translateY(0); }
 button:disabled { cursor: not-allowed; opacity: 0.4; }
@@ -63,6 +75,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 
 #gate {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -164,6 +177,24 @@ nav {
   border: none;
   padding: 0;
 }
+
+/* Hamburger - desktop shows the links inline, so this only appears once the
+   mobile breakpoint turns .nav-links into a dropdown panel. */
+.nav-menu-btn {
+  display: none;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-sec);
+  margin-right: 12px;
+  flex-shrink: 0;
+}
+
+.nav-menu-btn.active { color: var(--accent); border-color: var(--accent); }
 
 .nav-links {
   display: flex;
@@ -437,6 +468,8 @@ nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .page-heading {
@@ -613,13 +646,24 @@ nav {
 .recent-row:hover { background: var(--surface-raised); }
 .recent-row:last-child { border-bottom: none; }
 
-.recent-event { font-size: 0.875rem; margin-bottom: 3px; }
+/* Without min-width:0 a flex child won't shrink below its longest word, so a
+   long event name shoves the efficiency off the edge of the card. */
+.recent-row > div:first-child { min-width: 0; }
+
+.recent-event {
+  font-size: 0.875rem;
+  margin-bottom: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .recent-date  { font-size: 0.75rem; color: var(--text-sec); }
 
 .recent-right {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-shrink: 0;
 }
 
 .recent-eff {
@@ -829,15 +873,6 @@ nav {
   justify-content: center;
 }
 
-/* Thumb targets. 28px is fine with a mouse, not with a thumb halfway through
-   a set - bump the steppers toward the ~44px guideline on phones. Has to sit
-   after the base rules above, same specificity means last one wins. */
-@media (max-width: 480px) {
-  .stat-card { padding: 12px 10px; }
-  .stat-btns { gap: 12px; }
-  .step-btn  { width: 40px; height: 40px; font-size: 1.15rem; }
-}
-
 .stat-section-sep {
   border: none;
   border-top: 1px solid var(--border);
@@ -949,6 +984,10 @@ nav {
   line-height: 1.25;
 }
 
+/* Rapid tapping otherwise starts selecting the label text / firing the iOS
+   text-callout menu mid-rally. */
+.film-tap-btn, .step-btn { -webkit-user-select: none; user-select: none; }
+
 .film-tap-btn:hover { background: var(--border); border-color: var(--text-sec); transform: none; opacity: 1; }
 .film-tap-btn:active { background: var(--accent-muted); border-color: var(--accent); transform: scale(0.97); opacity: 1; }
 
@@ -1047,15 +1086,18 @@ nav {
 .session-actions { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
 
 /* Stats table */
+/* Rounded frame; the inner .table-scroll does the actual scrolling, so this
+   just clips the corners. */
 .table-wrap {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  /* Full Game mode is ~16 columns - way past a phone's width. Scroll it
-     sideways instead of clipping the right-hand stats off entirely.
-     overflow-y stays hidden so the rounded corners still clip the table. */
+  overflow: hidden;
+}
+
+/* Full Game mode is ~16 columns, far past a phone's width. */
+.table-scroll {
   overflow-x: auto;
-  overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -1063,7 +1105,8 @@ nav {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.875rem;
-  /* Don't let the browser crush columns to fit - let it overflow and scroll. */
+  /* Without this the browser crushes 16 columns down to min-content and the
+     numbers turn to mush. Let it keep its natural width and scroll instead. */
   min-width: max-content;
 }
 
@@ -1112,13 +1155,6 @@ nav {
 
 .stats-table tr:last-child td { border-bottom: none; }
 
-/* Tighten the cells on phones so there's less sideways scrolling to do. */
-@media (max-width: 480px) {
-  .stats-table    { font-size: 0.8rem; }
-  .stats-table th { padding: 8px 9px; }
-  .stats-table td { padding: 10px 9px; }
-}
-
 /* ── History ─────────────────────────────────────────────────────────────────*/
 .history-toolbar {
   display: flex;
@@ -1136,6 +1172,15 @@ nav {
   font-size: 0.875rem;
   flex: 1;
   min-width: 160px;
+}
+
+/* Card that exists only to hold a table - no padding, and it scrolls
+   sideways rather than clipping columns off the edge. */
+.table-card {
+  padding: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .history-table {
@@ -1319,3 +1364,156 @@ nav {
 .empty-icon { font-size: 3rem; margin-bottom: 16px; opacity: 0.4; }
 .empty-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 8px; }
 .empty-sub   { font-size: 0.875rem; color: var(--text-sec); margin-bottom: 20px; }
+
+/* ── Phones ──────────────────────────────────────────────────────────────────*
+ * Everything phone-specific lives here, at the bottom of the file and after
+ * every base rule it overrides. Same-specificity selectors are decided by
+ * source order, so a media query sitting above its own base rule silently
+ * does nothing - keeping them all down here means that can't happen.
+ *
+ * Two tiers: 560px covers phones in portrait and small windows, 480px is the
+ * squeeze for narrow devices. (The grid-column queries at 700/900px live next
+ * to their own definitions since they're layout, not phone tuning.)
+ */
+
+@media (max-width: 560px) {
+  /* ── Nav ────────────────────────────────────────────────────────────────
+     Laid out inline the nav wants ~500px (logo + 3 links + gear + user
+     pill), so below this the links collapse behind the hamburger and drop
+     down as a panel under the bar. */
+  .nav-inner { padding: 0 14px; }
+  .nav-logo  { font-size: 1rem; margin-right: 12px; }
+  .nav-menu-btn { display: flex; }
+
+  .nav-links {
+    display: none;
+    position: absolute;        /* resolves against <nav>, which is sticky */
+    top: 100%;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    padding: 6px 0;
+    z-index: 200;
+  }
+
+  .nav-links.nav-links-open { display: flex; }
+
+  /* Full-width rows in the panel - the desktop underline becomes a left bar
+     so the active page still reads at a glance. */
+  .nav-link {
+    height: auto;
+    padding: 14px 18px;
+    font-size: 0.95rem;
+    text-align: left;
+    border-bottom: none;
+    border-left: 3px solid transparent;
+  }
+
+  .nav-link.active {
+    border-left-color: var(--accent);
+    background: var(--accent-muted);
+  }
+
+  .nav-link:hover:not(:disabled) { transform: none; opacity: 1; }
+
+  .nav-actions { flex-shrink: 0; gap: 6px; margin-left: auto; }
+  .user-pill   { padding: 6px 10px 6px 7px; gap: 5px; }
+  .btn-icon    { width: 40px; height: 40px; }
+
+  /* ── Page chrome ─────────────────────────────────────────────────────── */
+  .page        { padding: 20px 16px 64px; gap: 20px; }
+  .page-narrow { padding: 20px 16px 64px; }
+  .page-heading, .session-event-name { font-size: 1.25rem; }
+  .card    { padding: 18px 16px; }
+  .card-sm { padding: 16px; }
+  .empty-state { padding: 48px 16px; }
+
+  /* ── Inputs ──────────────────────────────────────────────────────────────
+     iOS zooms the whole page when you focus an input under 16px. Every text
+     field on the entry form was 0.9rem, so tapping "Event name" yanked the
+     layout around. 16px is the threshold, not a preference. */
+  .input,
+  #gate-input,
+  .history-filter-input,
+  .dropdown-add-input { font-size: 16px; }
+
+  /* ── Touch targets ──────────────────────────────────────────────────────
+     Anything you tap while looking at a screen instead of your thumb wants
+     to be nearer 44px than 28px. */
+  .tab { padding: 10px 15px; font-size: 0.9rem; }
+  .tab-remove { font-size: 1.2rem; padding: 8px 5px; }
+  .btn-add-set { padding: 8px 14px; }
+  .entry-toggle-btn { padding: 9px 15px; }
+  .segment-btn { padding: 9px 14px; }
+  .film-undo-btn { padding: 10px 16px; }
+  .btn-ghost, .btn-danger, .btn-danger-solid { padding: 10px 16px; }
+  .chart-toggle { padding: 7px 12px; }
+  .color-swatch { width: 34px; height: 34px; }
+  .modal-close { font-size: 1.5rem; padding: 6px 10px; }
+
+  /* ── Entry form ─────────────────────────────────────────────────────────
+     Side by side, the Film/Manual toggle squeezes the tabs down to ~130px
+     and they stack four rows deep with "Game Total" breaking mid-phrase.
+     Give the tabs the full width and drop the toggle onto its own row,
+     stretched, which also makes it a much bigger tap target. */
+  .tab-bar-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  .tab-bar     { flex: none; }
+  .tab         { white-space: nowrap; padding: 10px 12px; }
+  .entry-toggle     { width: 100%; }
+  .entry-toggle-btn { flex: 1; }
+
+  .detail-toggle-row { gap: 10px; }
+  .film-tap-btn  { padding: 16px 8px; }
+  .film-tap-count { font-size: 1.9rem; }
+
+  .preview-card  { padding: 14px 12px; gap: 12px; }
+  .preview-metric { flex: 1 1 40%; }   /* 2x2 rather than 4 cramped columns */
+  .preview-value { font-size: 1.35rem; }
+  .preview-divider { display: none; }
+
+  /* ── Tables ─────────────────────────────────────────────────────────────
+     The set table scrolls sideways (.table-wrap); tightening the cells just
+     means less scrolling to reach the last column. */
+  .stats-table    { font-size: 0.8rem; }
+  .stats-table th { padding: 8px 9px; }
+  .stats-table td { padding: 10px 9px; }
+
+  .history-table th { padding: 10px 10px; font-size: 0.7rem; }
+  .history-table td { padding: 12px 10px; font-size: 0.8rem; }
+
+  /* ── Misc ───────────────────────────────────────────────────────────────*/
+  .chart-wrap { height: 260px; }
+  .modal-backdrop { padding: 12px; }
+  .modal { padding: 20px; gap: 20px; }
+  .recent-header, .recent-row { padding: 14px 16px; }
+  .recent-right { gap: 10px; }
+}
+
+@media (max-width: 480px) {
+  /* Initials still say who's logged in; the name is the first thing to go. */
+  .user-name { display: none; }
+
+  /* The history header cells are nowrap by default, which floors the table at
+     ~364px - wider than a 360px phone. Let them wrap and the whole table fits
+     without scrolling. (.table-card still scrolls if it has to.) */
+  .history-table th {
+    white-space: normal;
+    padding: 8px;
+    font-size: 0.65rem;
+  }
+  .history-table td { padding: 10px 8px; font-size: 0.78rem; }
+  .mode-badge { font-size: 0.62rem; padding: 3px 7px; }
+
+  /* Thumb targets on the manual grid. 28px is fine with a mouse, not with a
+     thumb halfway through a set. */
+  .stat-card { padding: 12px 10px; }
+  .stat-btns { gap: 12px; }
+  .step-btn  { width: 40px; height: 40px; font-size: 1.15rem; }
+  .stat-input { font-size: 1.7rem; }
+
+  .film-tap-btn { padding: 14px 6px; font-size: 0.7rem; }
+  .film-tap-count { font-size: 1.7rem; }
+}
