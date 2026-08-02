@@ -171,6 +171,16 @@ function effColor(eff) {
   return 'var(--danger)';
 }
 
+// effColor's tokens work anywhere the browser does the painting, but Chart.js
+// draws to a canvas and can't resolve var(--x) - it silently falls back to
+// black, which is why the efficiency dots were all black regardless of value.
+// Resolve to a literal colour before handing anything to a chart.
+function resolveColor(token) {
+  const m = String(token).trim().match(/^var\((--[\w-]+)\)$/);
+  if (!m) return token;
+  return getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim() || token;
+}
+
 function pctStr(val, total) {
   if (!total) return '-';
   return (val / total * 100).toFixed(1) + '%';
@@ -1759,7 +1769,18 @@ function renderChartCard(sessions) {
     const cpData    = chartData.map(d => +(d.contPlusPct   * 100).toFixed(1));
     const cmData    = chartData.map(d => +(d.contMinusPct  * 100).toFixed(1));
 
-    const pointColors = effData.map(v => effColor(v / 100));
+    const pointColors = effData.map(v => resolveColor(effColor(v / 100)));
+
+    // Efficiency is the only line on this axis that can go negative - it's
+    // (kills + block kills - errors) / attempts, so any session where errors
+    // outnumber kills sits below zero. The axis used to be pinned at min:0,
+    // which clipped those points clean out of the plot area: the line just
+    // started at the 0% floor and a net-negative night read as break-even.
+    // Drop the floor to the next 10% below the worst visible point instead.
+    // Every other line here (kill/error/continued %) is 0-100 by construction,
+    // so the floor only moves when the efficiency line is on and actually dips.
+    const worstEff = showEffLine && effData.length ? Math.min(...effData) : 0;
+    const yMin = worstEff < 0 ? Math.floor(worstEff / 10) * 10 : 0;
 
     const datasets = [];
 
@@ -1860,8 +1881,11 @@ function renderChartCard(sessions) {
             border: { color: '#2E3350' },
           },
           y: {
-            min: 0, max: 100,
-            grid: { color: '#2E3350' },
+            min: yMin, max: 100,
+            grid: {
+              color: ctx => (ctx.tick.value === 0 && yMin < 0 ? '#4A4E66' : '#2E3350'),
+              lineWidth: ctx => (ctx.tick.value === 0 && yMin < 0 ? 2 : 1),
+            },
             ticks: { color: '#8B90A8', font: { size: 11 }, callback: v => v + '%' },
             border: { color: '#2E3350' },
           },
