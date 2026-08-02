@@ -28,7 +28,11 @@ async function req(method, path, body) {
   if (res.status === 204) return null;
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || `HTTP ${res.status}`);
+    // Errors come back as {"error": "..."} - unwrap it so callers can show
+    // the message straight to the user instead of a JSON blob.
+    let msg = text;
+    try { msg = JSON.parse(text).error || text; } catch { /* not JSON, use as-is */ }
+    throw new Error(msg || `HTTP ${res.status}`);
   }
 
   return res.json();
@@ -36,6 +40,7 @@ async function req(method, path, body) {
 
 export const getUsers    = ()     => req('GET',  '/users');
 export const createUser  = name   => req('POST', '/users', { name });
+export const updateUser  = (id, name) => req('PUT', `/users/${id}`, { name });
 
 export const getSessions   = userId => req('GET',    `/sessions?userId=${userId}`);
 export const getSession    = id     => req('GET',    `/sessions/${id}`);

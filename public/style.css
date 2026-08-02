@@ -318,6 +318,53 @@ nav {
   font-size: 0.8rem;
 }
 
+/* Name row + its rename pencil. The row is the flex parent now, so the item
+   can't keep width:100% or the pencil gets pushed out of the panel. */
+.dropdown-row { display: flex; align-items: stretch; }
+.dropdown-row .dropdown-item { flex: 1; width: auto; min-width: 0; }
+.dropdown-user-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Highlighting moves from the item to the row, otherwise the selected tint
+   stops short of the pencil and the row looks cut in half. The descendant
+   selectors are deliberate - they out-specify the .dropdown-item rules above
+   rather than relying on source order to break a tie. */
+.dropdown-row .dropdown-item,
+.dropdown-row .dropdown-item:hover,
+.dropdown-row .dropdown-item.active { background: none; }
+.dropdown-row:hover  { background: var(--surface-raised); }
+.dropdown-row.active { background: var(--accent-muted); }
+
+.dropdown-edit {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  background: none;
+  border: none;
+  color: var(--text-sec);
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s;
+}
+
+.dropdown-row:hover .dropdown-edit { opacity: 1; }
+
+/* :not(:disabled) is here to out-specify the global button:hover rule, which
+   would otherwise win on element specificity and re-apply the lift + fade. */
+.dropdown-edit:hover:not(:disabled) { color: var(--accent); opacity: 1; transform: none; }
+.dropdown-edit:focus-visible { opacity: 1; }
+
+/* No hover to reveal it on a phone, so it stays visible there. */
+@media (hover: none) {
+  .dropdown-edit { opacity: 1; }
+}
+
+.dropdown-error {
+  padding: 0 12px 8px;
+  font-size: 0.75rem;
+  color: var(--danger);
+}
+
 /* Settings gear */
 .btn-icon {
   background: none;

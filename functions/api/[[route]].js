@@ -6,6 +6,7 @@
 //
 //   GET    /api/users               - all users
 //   POST   /api/users               - create a user
+//   PUT    /api/users/:id           - rename a user
 //   GET    /api/sessions?userId=X   - all of a user's sessions, sets attached
 //   GET    /api/sessions/:id        - one session with its sets
 //   POST   /api/sessions            - create a session + its sets
@@ -45,6 +46,30 @@ async function handleCreateUser(request, env) {
     return ok(result, 201);
   } catch (e) {
     if (e.message?.includes('UNIQUE')) return err('user already exists', 409);
+    throw e;
+  }
+}
+
+// Rename only - sessions hang off user_id, so the history follows the rename
+// without anything else being touched.
+async function handleUpdateUser(id, request, env) {
+  const { name } = await request.json();
+  if (!name?.trim()) return err('name required', 400);
+
+  const existing = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(id).first();
+  if (!existing) return err('not found', 404);
+
+  // Same title-casing as create, so a rename can't slip in a format the
+  // create path would have normalised away.
+  const clean = name.trim().replace(/\b\w/g, c => c.toUpperCase());
+
+  try {
+    const result = await env.DB.prepare('UPDATE users SET name = ? WHERE id = ? RETURNING *')
+      .bind(clean, id)
+      .first();
+    return ok(result);
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) return err('a user with that name already exists', 409);
     throw e;
   }
 }
@@ -202,9 +227,15 @@ export async function onRequest(context) {
   const method = request.method;
 
   try {
-    if (route[0] === 'users' && !route[1]) {
-      if (method === 'GET')  return handleGetUsers(env);
-      if (method === 'POST') return handleCreateUser(request, env);
+    if (route[0] === 'users') {
+      if (!route[1]) {
+        if (method === 'GET')  return handleGetUsers(env);
+        if (method === 'POST') return handleCreateUser(request, env);
+      } else {
+        const id = parseInt(route[1]);
+        if (isNaN(id)) return err('invalid id', 400);
+        if (method === 'PUT') return handleUpdateUser(id, request, env);
+      }
     }
 
     if (route[0] === 'sessions') {

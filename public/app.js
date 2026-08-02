@@ -1250,6 +1250,7 @@ function renderNav() {
 
   let dropOpen = false;
   let addingUser = false;
+  let editingUserId = null;   // id of the user whose row is in rename mode
 
   pill.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1266,10 +1267,27 @@ function renderNav() {
     drop.className = 'user-dropdown';
 
     state.users.forEach(u => {
+      if (editingUserId === u.id) {
+        drop.appendChild(renameRow(u));
+        return;
+      }
+
+      const isCurrent = u.id === state.currentUser?.id;
+
+      const row = document.createElement('div');
+      row.className = 'dropdown-row' + (isCurrent ? ' active' : '');
+
       const item = document.createElement('button');
-      item.className = 'dropdown-item' + (u.id === state.currentUser?.id ? ' active' : '');
-      item.textContent = u.name;
-      if (u.id === state.currentUser?.id) {
+      item.className = 'dropdown-item' + (isCurrent ? ' active' : '');
+
+      // Name in its own span so a long one can ellipsis instead of shoving
+      // the tick and the pencil off the edge.
+      const label = document.createElement('span');
+      label.className = 'dropdown-user-name';
+      label.textContent = u.name;
+      item.appendChild(label);
+
+      if (isCurrent) {
         const check = document.createElement('span');
         check.style.cssText = 'margin-left:auto;font-size:0.7rem;opacity:0.7';
         check.textContent = '✓';
@@ -1282,7 +1300,24 @@ function renderNav() {
         dropOpen = false;
         navigate('dashboard');
       });
-      drop.appendChild(item);
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'dropdown-edit';
+      editBtn.title = `Rename ${u.name}`;
+      editBtn.setAttribute('aria-label', `Rename ${u.name}`);
+      editBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+      </svg>`;
+      editBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        editingUserId = u.id;
+        addingUser = false;
+        renderDropdown();
+      });
+
+      row.appendChild(item);
+      row.appendChild(editBtn);
+      drop.appendChild(row);
     });
 
     const divider = document.createElement('hr');
@@ -1318,6 +1353,10 @@ function renderNav() {
         navigate('dashboard');
       }
 
+      // Without this, clicking into the field bubbles to the document
+      // handler below and shuts the dropdown before you can type.
+      row.addEventListener('click', e => e.stopPropagation());
+
       row.appendChild(input);
       row.appendChild(addBtn);
       drop.appendChild(row);
@@ -1330,6 +1369,7 @@ function renderNav() {
       newUserBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         addingUser = true;
+        editingUserId = null;
         renderDropdown();
       });
       drop.appendChild(newUserBtn);
@@ -1338,9 +1378,77 @@ function renderNav() {
     userWrap.appendChild(drop);
   }
 
+  // The inline rename row that replaces a user's row when its pencil is
+  // tapped. Renaming only touches the users table - sessions hang off
+  // user_id, so every scored session follows the new name automatically.
+  function renameRow(u) {
+    const wrap = document.createElement('div');
+
+    const row = document.createElement('div');
+    row.className = 'dropdown-add-row';
+
+    const input = document.createElement('input');
+    input.className = 'dropdown-add-input';
+    input.value = u.name;
+    input.setAttribute('aria-label', `Rename ${u.name}`);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn-primary';
+    saveBtn.style.cssText = 'font-size:0.8rem;padding:6px 12px';
+    saveBtn.textContent = 'Save';
+
+    const errEl = document.createElement('div');
+    errEl.className = 'dropdown-error';
+
+    function cancel() {
+      editingUserId = null;
+      renderDropdown();
+    }
+
+    async function doRename() {
+      const name = input.value.trim();
+      // Nothing to send if it's blank or unchanged - just close the row.
+      if (!name || name === u.name) return cancel();
+
+      saveBtn.disabled = true;
+      errEl.textContent = '';
+      try {
+        const updated = await api.updateUser(u.id, name);
+        state.users = await api.getUsers().catch(() => state.users);
+        // The pill and the dashboard header both read off currentUser, so it
+        // needs the new record too - not just the users list.
+        if (state.currentUser?.id === updated.id) state.currentUser = updated;
+        editingUserId = null;
+        dropOpen = false;
+        await render();
+      } catch (e) {
+        if (e.message === 'UNAUTHORIZED') return showPasswordGate();
+        // Duplicate names come back as a 409 - show it rather than failing
+        // silently the way the add path does.
+        saveBtn.disabled = false;
+        errEl.textContent = e.message;
+      }
+    }
+
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter')  doRename();
+      if (e.key === 'Escape') cancel();
+    });
+    saveBtn.addEventListener('click', doRename);
+    wrap.addEventListener('click', e => e.stopPropagation());
+
+    row.appendChild(input);
+    row.appendChild(saveBtn);
+    wrap.appendChild(row);
+    wrap.appendChild(errEl);
+
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+    return wrap;
+  }
+
   // Close the dropdown on any outside click.
   document.addEventListener('click', function closeOnOutside() {
-    if (dropOpen) { dropOpen = false; addingUser = false; renderDropdown(); }
+    if (dropOpen) { dropOpen = false; addingUser = false; editingUserId = null; renderDropdown(); }
     document.removeEventListener('click', closeOnOutside);
   });
 
