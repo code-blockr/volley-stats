@@ -16,9 +16,12 @@ const MODES = [
 // Stat definitions per mode. The UI iterates these to build the grids and
 // Film Review buttons, so adding a stat means adding it here (plus an entry
 // in emptySet, normalizeSetKeys, the schema, and the API insert/update).
-// Each entry: { key, label, tapKey?, getCount? }
-// tapKey: field to increment on Film Review tap (default = key)
+// Each entry: { key, label, tapKey?, getCount?, setCount? }
+// tapKey:   field to increment on Film Review tap (default = key)
 // getCount: fn(currentSet) => number (default = currentSet[key] || 0)
+// setCount: fn(currentSet, n) => void - writes an absolute value back
+//           (default = currentSet[key] = n). Only virtual stats need this;
+//           they have no DB column of their own to write to.
 
 // Detail mode - full breakdown
 const OFFENCE_STATS_DETAIL = [
@@ -44,7 +47,16 @@ const OFFENCE_STATS_STANDARD = [
   { key: 'kills',      label: 'Kill'  },
   { key: '_continue',  label: 'Continue',
     tapKey: 'continuedPlus',
-    getCount: s => (s.continuedPlus || 0) + (s.continuedMinus || 0) },
+    getCount: s => (s.continuedPlus || 0) + (s.continuedMinus || 0),
+    // Manual entry types a combined total into one box, so we have to split it
+    // back across two columns. The delta goes into continuedPlus and only
+    // spills into continuedMinus if the new total drops below it - that way a
+    // +/- split entered in Detail mode survives a trip through Standard.
+    setCount: (s, n) => {
+      const minus = s.continuedMinus || 0;
+      if (n >= minus) { s.continuedPlus = n - minus; }
+      else            { s.continuedPlus = 0; s.continuedMinus = n; }
+    } },
   { key: 'errors',     label: 'Error' },
 ];
 const BLOCKING_STATS_STANDARD = [
@@ -82,6 +94,27 @@ function getStatGroups(mode, detailMode = true) {
   }
   return groups;
 }
+
+// Read/write a stat through its definition, so callers don't have to care
+// whether it's a real column or a virtual one like _continue.
+function readStat(set, def) {
+  return def.getCount ? def.getCount(set) : (set[def.key] || 0);
+}
+
+function writeStat(set, def, n) {
+  const val = Math.max(0, n);
+  if (def.setCount) def.setCount(set, val);
+  else              set[def.key] = val;
+}
+
+// Fields Standard mode can't reach. Standard's Continue card still covers
+// continuedMinus (it's in the total, and setCount can spill into it), so these
+// are the only ones you genuinely can't touch without switching to Detail.
+const DETAIL_ONLY_STATS = [
+  { key: 'blockPlus',  label: 'Block+', modes: ['offence_blocking', 'full_game'] },
+  { key: 'blockMinus', label: 'Block−', modes: ['offence_blocking', 'full_game'] },
+  { key: 'digPlus',    label: 'Dig+',   modes: ['full_game'] },
+];
 
 // Just a lookup of id → label, derived from MODES so I don't have to keep
 // two things in sync.
@@ -170,6 +203,10 @@ const SETTINGS_KEY = 'vs_settings';
 
 const SETTINGS_DEFAULTS = {
   accentColor: '#FF6B35',
+  // Entry-form toggles live here too, so the form opens the way you last left
+  // it instead of resetting to Film + Standard every single time.
+  entryMode:   'film',
+  detailMode:  false,
 };
 
 // Preset accent swatches. There's still a colour picker for anyone who wants
@@ -253,8 +290,8 @@ function freshEntryState(editing = null) {
       ? editing.sets.map(s => ({ ...emptySet(), ...normalizeSetKeys(s) }))
       : [emptySet()],
     activeTab:  0,               // 0 = Game Total, 1+ = Set N
-    entryMode:  'film',
-    detailMode: false,           // false = Standard (no block kill), true = Detail (full breakdown)
+    entryMode:  settings.entryMode,
+    detailMode: settings.detailMode,  // false = Standard (condensed), true = Detail (full breakdown)
     tapHistory: [],              // for undo in Film Review
     errors:     {},              // field-level validation errors
   };
@@ -1673,42 +1710,48 @@ function renderTabBar(container, page, es) {
     const btn = document.createElement('button');
     btn.className = 'entry-toggle-btn' + (es.entryMode === id ? ' active' : '');
     btn.textContent = label;
-    btn.addEventListener('click', () => { es.entryMode = id; updateEntryStats(page, es); });
+    btn.addEventListener('click', () => {
+      es.entryMode = id;
+      saveSetting('entryMode', id);
+      updateEntryStats(page, es);
+    });
     toggle.appendChild(btn);
   });
 
   row.appendChild(toggle);
   container.appendChild(row);
 
-  // Standard / Detail toggle - only matters in Film Review mode, since Manual
-  // already shows every stat in the grid.
-  if (es.entryMode === 'film') {
-    const detailRow = document.createElement('div');
-    detailRow.className = 'detail-toggle-row';
+  // Standard / Detail toggle - applies to both entry modes. In Film Review it
+  // controls which tap buttons exist; in Manual it controls which number
+  // inputs the grid renders.
+  const detailRow = document.createElement('div');
+  detailRow.className = 'detail-toggle-row';
 
-    const detailLabel = document.createElement('span');
-    detailLabel.className = 'detail-toggle-label';
-    detailLabel.textContent = 'Stat depth';
+  const detailLabel = document.createElement('span');
+  detailLabel.className = 'detail-toggle-label';
+  detailLabel.textContent = 'Stat depth';
 
-    const detailControl = document.createElement('div');
-    detailControl.className = 'segment-control';
+  const detailControl = document.createElement('div');
+  detailControl.className = 'segment-control';
 
-    [
-      { id: false, label: 'Standard' },
-      { id: true,  label: 'Detail'   },
-    ].forEach(({ id, label }) => {
-      const btn = document.createElement('button');
-      btn.className = 'segment-btn' + (es.detailMode === id ? ' active' : '');
-      btn.textContent = label;
-      btn.addEventListener('click', () => { es.detailMode = id; updateEntryStats(page, es); });
-      detailControl.appendChild(btn);
+  [
+    { id: false, label: 'Standard' },
+    { id: true,  label: 'Detail'   },
+  ].forEach(({ id, label }) => {
+    const btn = document.createElement('button');
+    btn.className = 'segment-btn' + (es.detailMode === id ? ' active' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      es.detailMode = id;
+      saveSetting('detailMode', id);
+      updateEntryStats(page, es);
     });
+    detailControl.appendChild(btn);
+  });
 
-    detailRow.appendChild(detailLabel);
-    detailRow.appendChild(detailControl);
-    container.appendChild(detailRow);
-  }
-
+  detailRow.appendChild(detailLabel);
+  detailRow.appendChild(detailControl);
+  container.appendChild(detailRow);
 }
 
 function renderStatsAndFilm(container, es) {
@@ -1731,7 +1774,7 @@ function renderManualStats(container, es) {
     container.appendChild(note);
   }
 
-  getStatGroups(es.mode, true).forEach(({ stats }, gi) => {
+  getStatGroups(es.mode, es.detailMode).forEach(({ stats }, gi) => {
     if (gi > 0) {
       const sep = document.createElement('hr');
       sep.className = 'stat-section-sep';
@@ -1741,14 +1784,17 @@ function renderManualStats(container, es) {
     const grid = document.createElement('div');
     grid.className = 'stat-grid';
 
-    stats.forEach(({ key, label }) => {
+    stats.forEach(def => {
+      const { label } = def;
+
       if (isReadOnly) {
         const card = document.createElement('div');
         card.className = 'stat-card-readonly';
-        card.innerHTML = `<div class="stat-label">${label}</div><div class="stat-divider"></div><div class="stat-value-display">${displayStats[key] || 0}</div>`;
+        card.innerHTML = `<div class="stat-label">${label}</div><div class="stat-divider"></div><div class="stat-value-display">${readStat(displayStats, def)}</div>`;
         grid.appendChild(card);
       } else {
-        const val = es.sets[activeSetIdx][key] || 0;
+        const set = es.sets[activeSetIdx];
+        const val = readStat(set, def);
         const card = document.createElement('div');
         card.className = 'stat-card';
 
@@ -1764,11 +1810,18 @@ function renderManualStats(container, es) {
         input.min = '0';
         input.className = 'stat-input';
         input.value = val;
-        input.addEventListener('input', e => {
-          es.sets[activeSetIdx][key] = Math.max(0, parseInt(e.target.value) || 0);
+
+        // Every write goes through writeStat, then refreshes the preview only -
+        // redrawing the whole grid would yank the input out from under whoever
+        // is mid-type.
+        const commit = (n, syncInput) => {
+          writeStat(set, def, n);
+          if (syncInput) input.value = readStat(set, def);
           const preview = document.querySelector('#live-preview');
           if (preview) preview.replaceWith(renderLivePreview(es));
-        });
+        };
+
+        input.addEventListener('input', e => commit(parseInt(e.target.value) || 0, false));
 
         const btns = document.createElement('div');
         btns.className = 'stat-btns';
@@ -1776,23 +1829,12 @@ function renderManualStats(container, es) {
         const minusBtn = document.createElement('button');
         minusBtn.className = 'step-btn';
         minusBtn.textContent = '−';
-        minusBtn.addEventListener('click', () => {
-          const cur = es.sets[activeSetIdx][key] || 0;
-          es.sets[activeSetIdx][key] = Math.max(0, cur - 1);
-          input.value = es.sets[activeSetIdx][key];
-          const preview = document.querySelector('#live-preview');
-          if (preview) preview.replaceWith(renderLivePreview(es));
-        });
+        minusBtn.addEventListener('click', () => commit(readStat(set, def) - 1, true));
 
         const plusBtn = document.createElement('button');
         plusBtn.className = 'step-btn';
         plusBtn.textContent = '+';
-        plusBtn.addEventListener('click', () => {
-          es.sets[activeSetIdx][key] = (es.sets[activeSetIdx][key] || 0) + 1;
-          input.value = es.sets[activeSetIdx][key];
-          const preview = document.querySelector('#live-preview');
-          if (preview) preview.replaceWith(renderLivePreview(es));
-        });
+        plusBtn.addEventListener('click', () => commit(readStat(set, def) + 1, true));
 
         btns.appendChild(minusBtn);
         btns.appendChild(plusBtn);
@@ -1806,6 +1848,23 @@ function renderManualStats(container, es) {
 
     container.appendChild(grid);
   });
+
+  // Standard hides a few fields outright. If the active set already has values
+  // in them - typed in Detail, or carried in from an edited session - say so,
+  // because they still count and they'll reappear in the session table after
+  // saving. Nothing is cleared; this is just so it isn't a surprise.
+  if (!es.detailMode && !isReadOnly) {
+    const stranded = DETAIL_ONLY_STATS
+      .filter(({ key, modes }) => modes.includes(es.mode) && (displayStats[key] || 0) > 0)
+      .map(({ key, label }) => `${label} ${displayStats[key]}`);
+
+    if (stranded.length) {
+      const note = document.createElement('div');
+      note.className = 'game-total-note';
+      note.textContent = `ⓘ Set ${es.activeTab} also has ${stranded.join(', ')} — switch to Detail to edit these.`;
+      container.appendChild(note);
+    }
+  }
 }
 
 function renderFilmReview(container, es) {
@@ -1926,9 +1985,10 @@ function renderFilmLarge(container, es, setIdx, currentSet) {
     const row = document.createElement('div');
     row.className = 'film-large-row';
 
-    stats.forEach(({ key, label, tapKey, getCount }) => {
+    stats.forEach(def => {
+      const { key, label, tapKey } = def;
       const actualKey    = tapKey || key;
-      const displayCount = getCount ? getCount(currentSet) : (currentSet[key] || 0);
+      const displayCount = readStat(currentSet, def);
 
       const btn = document.createElement('button');
       btn.className = 'film-tap-btn';

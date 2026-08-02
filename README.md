@@ -203,6 +203,8 @@ Valid modes: `"offence"`, `"offence_blocking"`, `"full_game"`.
 - The password is server-side only. It's stored as a Cloudflare environment secret, injected into the Worker at runtime, and checked on every request before anything else runs. It's not in the source code, not in the JS bundle, and inspecting the page won't surface it. 
   - Thanks Simon Borer for the lesson on frontend security vulnerabilities
 - Film Review mode is named that because the most common use case is watching back game footage and tapping along. Works fine tracking live too - it's just big tap buttons either way. The name makes more sense for how it actually gets used though.
+- Both entry modes have a Standard/Detail stat depth toggle. Standard collapses the +/− breakdowns into single buttons - Continue instead of Continue Plus and Continue Minus, Block instead of Block Kill/Plus/Minus - for when you're watching film at speed and don't want to think that hard. Detail gives you every field. The toggle (and Film vs Manual) is remembered per device in localStorage, so the form opens the way you left it.
+- Standard's "Continue" is a single box but the database has two columns behind it. Typing a total adjusts `continued_plus` by the difference and leaves `continued_minus` alone; if the total you type is lower than `continued_minus`, plus goes to zero and minus absorbs the rest. So a split you entered in Detail survives a trip through Standard instead of getting flattened. The other detail-only fields (block +/−, dig+) aren't editable in Standard at all - if a set has values in them, a line under the grid tells you so rather than pretending they don't exist.
 - Sessions store the date as a plain `YYYY-MM-DD` string with no timezone attached. Throughout the app, dates are parsed as `T12:00:00Z` (UTC noon) before being passed to `Date`. This prevents timezone offsets from shifting the date - if your system is UTC-5, parsing `2026-04-06` as midnight UTC would display as May 7th. Noon UTC is safe for any timezone plus/minus 12 hours.
 - The efficiency formula is `(kills + block_kills - errors) / attempts`, where attempts = kills + errors + continued_plus + continued_minus. Block kills end the rally so they count toward efficiency, but they aren't attack attempts so they don't go in the denominator. It can go negative - if errors exceed kills + block kills, the number goes red.
   - **THE ABOVE MIGHT ALL BE SUBJECT TO CHANGE BASED ON RENEE'S EVALUATION**
@@ -217,5 +219,4 @@ Valid modes: `"offence"`, `"offence_blocking"`, `"full_game"`.
 - Per-user stats comparison view
 - Date range filter on History (right now it's exact-date only)
 - Per-set efficiency chart (not just per-session)
-- Add the Standard and Detail mode toggle to Manual Entry mode
 - Update live preview at the bottom of log session window to be conscious of stat mode

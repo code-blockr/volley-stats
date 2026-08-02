@@ -829,6 +829,15 @@ nav {
   justify-content: center;
 }
 
+/* Thumb targets. 28px is fine with a mouse, not with a thumb halfway through
+   a set - bump the steppers toward the ~44px guideline on phones. Has to sit
+   after the base rules above, same specificity means last one wins. */
+@media (max-width: 480px) {
+  .stat-card { padding: 12px 10px; }
+  .stat-btns { gap: 12px; }
+  .step-btn  { width: 40px; height: 40px; font-size: 1.15rem; }
+}
+
 .stat-section-sep {
   border: none;
   border-top: 1px solid var(--border);
@@ -907,10 +916,16 @@ nav {
 .film-large-row {
   display: flex;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
+/* Grow to fill the row on desktop, but never squeeze below 90px - past that
+   they wrap instead. Detail mode's 4-button Attack row and 5-button Passing
+   row become 3+1 and 3+2 on a phone rather than five slivers with the labels
+   spilling out. No breakpoint needed; it falls out of the min width. */
 .film-large-row .film-tap-btn {
-  flex: 1;
+  flex: 1 1 90px;
+  min-width: 90px;
 }
 
 .film-tap-btn {
@@ -928,6 +943,10 @@ nav {
   letter-spacing: 0.05em;
   text-transform: uppercase;
   transition: background 0.1s, border-color 0.1s;
+  /* "Continue Minus" needs to wrap to two lines in a narrow button rather
+     than overflow it. */
+  text-align: center;
+  line-height: 1.25;
 }
 
 .film-tap-btn:hover { background: var(--border); border-color: var(--text-sec); transform: none; opacity: 1; }
@@ -1032,13 +1051,20 @@ nav {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  overflow: hidden;
+  /* Full Game mode is ~16 columns - way past a phone's width. Scroll it
+     sideways instead of clipping the right-hand stats off entirely.
+     overflow-y stays hidden so the rounded corners still clip the table. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .stats-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.875rem;
+  /* Don't let the browser crush columns to fit - let it overflow and scroll. */
+  min-width: max-content;
 }
 
 .stats-table th {
@@ -1085,6 +1111,13 @@ nav {
 }
 
 .stats-table tr:last-child td { border-bottom: none; }
+
+/* Tighten the cells on phones so there's less sideways scrolling to do. */
+@media (max-width: 480px) {
+  .stats-table    { font-size: 0.8rem; }
+  .stats-table th { padding: 8px 9px; }
+  .stats-table td { padding: 10px 9px; }
+}
 
 /* ── History ─────────────────────────────────────────────────────────────────*/
 .history-toolbar {
